@@ -1,0 +1,164 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------
+  # Infrastructure Services
+  # ----------------------------------------------------
+  
+  # Redpanda - high-performance Kafka alternative with zero Zookeeper dependencies
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"
+      - "19644:9644" # Admin HTTP API
+    networks:
+      - benchmarking-net
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Redis - leaderboard sorted set and active job cache
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - benchmarking-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # PostgreSQL - storage of contestants, submissions, and benchmark metadata
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: benchmarking
+    ports:
+      - "5433:5432"
+    networks:
+      - benchmarking-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d benchmarking"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ----------------------------------------------------
+  # Core Platform Microservices
+  # ----------------------------------------------------
+
+  # Core Orchestrator - sandboxing management, image compilation, job execution triggers
+  core-orchestrator:
+    build:
+      context: ./core-orchestrator
+      dockerfile: Dockerfile
+    container_name: core-orchestrator
+    environment:
+      - PORT=8000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/benchmarking
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URI=${MONGODB_URI}
+      - KAFKA_BROKERS=redpanda:29092
+      - DOCKER_SOCKET=/var/run/docker.sock
+      - BENCHMARK_NET=benchmarking-net
+      - BOT_FLEET_URL=http://bot-fleet:8081
+    ports:
+      - "8010:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Programmatically manage Docker
+    networks:
+      - benchmarking-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  # Telemetry Ingester - processes telemetry streams, calculates score aggregates, pushes live metrics via WebSockets
+  telemetry-ingester:
+    build:
+      context: ./telemetry-ingester
+      dockerfile: Dockerfile
+    container_name: telemetry-ingester
+    environment:
+      - PORT=8001
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/benchmarking
+      - REDIS_URL=redis://redis:6379
+      - KAFKA_BROKERS=redpanda:29092
+    ports:
+      - "8001:8001"
+    networks:
+      - benchmarking-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  # Bot Fleet - scalable trading bot generator that stresses test environments
+  bot-fleet:
+    build:
+      context: ./bot-fleet
+      dockerfile: Dockerfile
+    container_name: bot-fleet
+    environment:
+      - PORT=8081
+      - KAFKA_BROKERS=redpanda:29092
+    ports:
+      - "8081:8081"
+    networks:
+      - benchmarking-net
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # Dashboard - React-based administration dashboard and real-time visualization of tests
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: dashboard
+    ports:
+      - "3000:3000"
+    networks:
+      - benchmarking-net
+
+  # Mock Contestant - A test subject container to validate the flow
+  mock-contestant:
+    build:
+      context: ./mock-contestant
+      dockerfile: Dockerfile
+    container_name: mock-contestant
+    ports:
+      - "8082:8080"
+    networks:
+      - benchmarking-net
+
+networks:
+  benchmarking-net:
+    name: benchmarking-net
+    driver: bridge

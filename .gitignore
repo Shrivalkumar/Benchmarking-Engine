@@ -1,0 +1,31 @@
+# Env files
+.env
+.env.local
+.env.*.local
+
+# Dependency directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# Build outputs
+dist/
+build/
+temp_builds/
+core-orchestrator/temp_builds/
+matching-engine
+
+# OS generated files
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

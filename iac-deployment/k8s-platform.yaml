@@ -1,0 +1,338 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+  namespace: default
+data:
+  DATABASE_URL: "postgresql://postgres:postgres@postgres-service:5432/benchmarking"
+  REDIS_URL: "redis://redis-service:6379"
+  KAFKA_BROKERS: "redpanda-service:9092"
+  BOT_FLEET_URL: "http://bot-fleet-service:8081"
+  BENCHMARK_NET: "bridge" # Default docker network for DinD environment
+  DOCKER_HOST: "tcp://localhost:2375" # Points to the local DinD sidecar
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# ----------------------------------------------------
+# PostgreSQL Service & StatefulSet
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          env:
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              value: "postgres"
+            - name: POSTGRES_DB
+              value: "benchmarking"
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+spec:
+  ports:
+    - port: 5432
+  selector:
+    app: postgres
+---
+# ----------------------------------------------------
+# Redis Service & Deployment
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+spec:
+  ports:
+    - port: 6379
+  selector:
+    app: redis
+---
+# ----------------------------------------------------
+# Redpanda (Kafka) Service & Deployment
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redpanda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redpanda
+  template:
+    metadata:
+      labels:
+        app: redpanda
+    spec:
+      containers:
+        - name: redpanda
+          image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+          command:
+            - redpanda
+            - start
+            - --overprovisioned
+            - --smp=1
+            - --memory=1G
+            - --reserve-memory=0M
+            - --node-id=0
+            - --check=false
+            - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+            - --advertise-kafka-addr=PLAINTEXT://redpanda-service:9092
+          ports:
+            - containerPort: 9092
+              name: kafka
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda-service
+spec:
+  ports:
+    - port: 9092
+  selector:
+    app: redpanda
+---
+# ----------------------------------------------------
+# Core Orchestrator Deployment (with Docker-in-Docker Sidecar)
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: core-orchestrator
+  template:
+    metadata:
+      labels:
+        app: core-orchestrator
+    spec:
+      containers:
+        # Core Orchestrator application
+        - name: orchestrator-app
+          image: iicpc/core-orchestrator:latest
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: "500m"
+              memory: 512Mi
+
+        # Docker-in-Docker (DinD) sidecar to securely build and run contestant sandboxes
+        - name: dind-sidecar
+          image: docker:24-dind
+          securityContext:
+            privileged: true
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: "" # Disable TLS since it is running on localhost inside Pod boundary
+          volumeMounts:
+            - name: dind-storage
+              mountPath: /var/lib/docker
+      volumes:
+        - name: dind-storage
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: core-orchestrator-service
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 8000
+      targetPort: 8000
+  selector:
+    app: core-orchestrator
+---
+# ----------------------------------------------------
+# Telemetry Ingester Service & Deployment
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-ingester
+spec:
+  replicas: 2 # Scale horizontally to process massive metrics streams
+  selector:
+    matchLabels:
+      app: telemetry-ingester
+  template:
+    metadata:
+      labels:
+        app: telemetry-ingester
+    spec:
+      containers:
+        - name: ingester
+          image: iicpc/telemetry-ingester:latest
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          ports:
+            - containerPort: 8001
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: "500m"
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-ingester-service
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 8001
+      targetPort: 8001
+  selector:
+    app: telemetry-ingester
+---
+# ----------------------------------------------------
+# Go Bot Fleet Load Generator Deployment
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bot-fleet
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bot-fleet
+  template:
+    metadata:
+      labels:
+        app: bot-fleet
+    spec:
+      containers:
+        - name: bot-fleet-app
+          image: iicpc/bot-fleet:latest
+          envFrom:
+            - configMapRef:
+                name: platform-config
+          ports:
+            - containerPort: 8081
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bot-fleet-service
+spec:
+  ports:
+    - port: 8081
+  selector:
+    app: bot-fleet
+---
+# ----------------------------------------------------
+# Frontend Dashboard Service & Deployment
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+        - name: dashboard-app
+          image: iicpc/dashboard:latest
+          ports:
+            - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-service
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 3000
+      targetPort: 3000
+  selector:
+    app: dashboard

@@ -1,0 +1,28 @@
+{
+  "name": "telemetry-ingester",
+  "version": "1.0.0",
+  "description": "IICPC Telemetry Processing and Real-time WebSocket Ingester",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.11.5",
+    "redis": "^4.6.13",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.12",
+    "@types/pg": "^8.11.5",
+    "@types/ws": "^8.5.10",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.5"
+  }
+}
