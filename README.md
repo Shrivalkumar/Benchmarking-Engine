@@ -150,3 +150,52 @@ Contestant containers are launched with:
 - `--cpus=1` (CPU pinning / limiting concurrency amplification)
 - `--memory=512m` (Strict memory limits to prevent host system crashes)
 - `--network=benchmarking-net` (No route to outside internet, securing host environment from network egress)
+
+---
+
+## 5. How to Run This Project Locally
+
+To run the Benchmarking Engine on your local machine, you only need to have **Docker** and **Docker Compose** installed. You do not need Node.js, Go, or any databases installed on your host system.
+
+### 5.1 Step 1: Clone the Repository
+Ensure you have cloned this repository to your local workspace:
+```bash
+git clone <repository-url>
+cd Benchmarking-Engine
+```
+
+### 5.2 Step 2: Configure Environment Variables
+Create a `.env` file in the root of the directory to store your MongoDB connection string (this file is automatically ignored by Git to prevent security leaks):
+```bash
+echo "MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.mongodb.net/benchmarking?appName=Cluster0" > .env
+```
+Replace the placeholder with your actual MongoDB Atlas connection credentials.
+
+### 5.3 Step 3: Spin Up the Services
+Run the following command to automatically pull, build, and start all 7 microservices in the background:
+```bash
+make up
+```
+*(Or use `docker compose up -d` if `make` is not available on your system).*
+
+The services will initialize in the correct order:
+1. **Infrastructure:** PostgreSQL, Redis, and Redpanda (Kafka).
+2. **Pre-baked compiler:** `cpp-builder` will download the C++ dependencies (Boost, Asio, Crow) and cache them locally (this takes 1-2 minutes on the very first boot).
+3. **Core Services:** Core Orchestrator, Telemetry Ingester, Bot Fleet, and the React Dashboard.
+
+### 5.4 Step 4: Access the Dashboard
+Once the services are active, open your web browser and navigate to:
+👉 **`http://localhost:3000`**
+
+### 5.5 Step 5: Test and Benchmark
+1. **Register/Sign Up:** Click **Sign up here**, create a handler (username), password, and team identifier to log in.
+2. **Submit Code:** Select **Go** or **C++** from the dropdown, write/paste your matching engine code, and click **Submit & Compile Code**.
+3. **Stress Test:** Enter your target TPS, concurrency, and duration parameters, then click **Trigger Stress Test Run** to see real-time performance graphs!
+
+### 5.6 Command Reference
+Manage your local environment using the following standard commands:
+* **Stop services & wipe database state:** `make down` (or `docker compose down -v`)
+* **Rebuild container images:** `make build` (or `docker compose build --no-cache`)
+* **Inspect logs in real-time:** `make logs` (or `docker compose logs -f`)
+* **Check service status:** `make ps` (or `docker compose ps`)
+
