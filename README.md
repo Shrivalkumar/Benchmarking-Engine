@@ -1,3 +1,4 @@
+
 ## Architecture Blueprint & System Design Document
 
 This platform is an end-to-end distributed system designed to build, host, sandbox, stress-test, and evaluate contestant-submitted matching engines. It is designed to scale horizontally but run completely containerized on a local machine for testing and development.
@@ -149,6 +150,3 @@ Contestant containers are launched with:
 - `--cpus=1` (CPU pinning / limiting concurrency amplification)
 - `--memory=512m` (Strict memory limits to prevent host system crashes)
 - `--network=benchmarking-net` (No route to outside internet, securing host environment from network egress)
-# Benchmarking-Engine
-# Benchmarking-Engine
-# Benchmarking-Engine
