@@ -351,7 +351,7 @@ app.get('/leaderboard', async (req: Request, res: Response): Promise<any> => {
         const teamName = item.value;
         const score = item.score;
         
-        // Fetch peak metrics for team
+        // Fetch peak metrics for team (ignoring legacy 0ms corrupted runs)
         const stats = await db.query(
           `SELECT 
              MAX(avg_tps) as max_tps, 
@@ -362,7 +362,7 @@ app.get('/leaderboard', async (req: Request, res: Response): Promise<any> => {
            FROM benchmark_runs br
            JOIN submissions s ON br.submission_id = s.id
            JOIN contestants c ON s.contestant_id = c.id
-           WHERE c.team_name = $1 AND br.status = 'completed'`,
+           WHERE c.team_name = $1 AND br.status = 'completed' AND br.p50_latency_ms > 0`,
           [teamName]
         );
 

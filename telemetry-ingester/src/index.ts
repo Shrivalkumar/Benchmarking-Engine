@@ -33,6 +33,11 @@ interface RunStats {
   windowTotal: number;
   windowSuccess: number;
   windowLatencies: number[]; // stored in milliseconds
+  // Running histories to compute averages
+  p50History: number[];
+  p90History: number[];
+  p99History: number[];
+  tpsHistory: number[];
 }
 
 const runStatsMap = new Map<string, RunStats>();
@@ -74,6 +79,12 @@ setInterval(async () => {
   if (runStatsMap.size === 0) return;
 
   for (const [runId, stats] of runStatsMap.entries()) {
+    // Safeguard to initialize history arrays if needed
+    if (!stats.p50History) stats.p50History = [];
+    if (!stats.p90History) stats.p90History = [];
+    if (!stats.p99History) stats.p99History = [];
+    if (!stats.tpsHistory) stats.tpsHistory = [];
+
     // 1. Calculate TPS (transactions in this 1s window)
     const tps = stats.windowTotal;
 
@@ -89,26 +100,39 @@ setInterval(async () => {
       p50 = latencies[Math.floor(count * 0.50)];
       p90 = latencies[Math.floor(count * 0.90)];
       p99 = latencies[Math.floor(count * 0.99)];
+
+      // Only push to history when active load is processed to avoid skewing averages during wind-down
+      stats.p50History.push(p50);
+      stats.p90History.push(p90);
+      stats.p99History.push(p99);
+      stats.tpsHistory.push(tps);
     }
 
     const windowSuccessRate = stats.windowTotal > 0 ? stats.windowSuccess / stats.windowTotal : 0;
     const overallSuccessRate = stats.totalOrders > 0 ? stats.successCount / stats.totalOrders : 0;
 
-    // 3. Compute Composite Score for Leaderboard
-    // Formula: (TPS * WindowSuccessRate) / (p90_latency_ms + 1.0)
-    const compositeScore = Number(((tps * windowSuccessRate) / (p90 + 1.0)).toFixed(2));
+    // Compute running averages across all active load-generating seconds
+    const avgP50 = stats.p50History.length > 0 ? stats.p50History.reduce((a, b) => a + b, 0) / stats.p50History.length : 0;
+    const avgP90 = stats.p90History.length > 0 ? stats.p90History.reduce((a, b) => a + b, 0) / stats.p90History.length : 0;
+    const avgP99 = stats.p99History.length > 0 ? stats.p99History.reduce((a, b) => a + b, 0) / stats.p99History.length : 0;
+    const avgTps = stats.tpsHistory.length > 0 ? stats.tpsHistory.reduce((a, b) => a + b, 0) / stats.tpsHistory.length : 0;
 
-    // Update Redis Sorted Set for the Leaderboard
+    // Overall Score represents the sustained average composite performance over the run
+    const overallScore = Number(((avgTps * overallSuccessRate) / (avgP90 + 1.0)).toFixed(2));
+    
+    // Live stream tick shows current second metrics
+    const currentTickScore = Number(((tps * windowSuccessRate) / (p90 + 1.0)).toFixed(2));
+
+    // Update Redis Sorted Set for the Leaderboard using the overall running average score
     try {
-      // Only write positive scores to maintain standard sorting
-      if (compositeScore > 0) {
-        await redis.zAdd('leaderboard', { score: compositeScore, value: stats.teamName });
+      if (overallScore > 0) {
+        await redis.zAdd('leaderboard', { score: overallScore, value: stats.teamName });
       }
     } catch (err) {
       console.error('Failed to update Redis leaderboard:', err);
     }
 
-    // 4. Update Postgres metadata dynamically
+    // 4. Update Postgres metadata dynamically using running averages
     try {
       await db.query(
         `UPDATE benchmark_runs 
@@ -119,13 +143,13 @@ setInterval(async () => {
              p99_latency_ms = $5, 
              avg_tps = $6
          WHERE id = $7`,
-        [stats.totalOrders, overallSuccessRate, p50, p90, p99, tps, runId]
+        [stats.totalOrders, overallSuccessRate, avgP50, avgP90, avgP99, avgTps, runId]
       );
     } catch (err) {
       console.error('Failed to update benchmark run in Postgres:', err);
     }
 
-    // 5. Broadcast live metrics over WebSocket
+    // 5. Broadcast live metrics over WebSocket (keeps charts streaming)
     const tickData = {
       type: 'telemetry-tick',
       run_id: runId,
@@ -136,7 +160,7 @@ setInterval(async () => {
       p99: Number(p99.toFixed(2)),
       success_rate: Number((windowSuccessRate * 100).toFixed(2)),
       total_orders: stats.totalOrders,
-      composite_score: compositeScore,
+      composite_score: currentTickScore, // shows live score
     };
     broadcast(tickData);
 
@@ -219,6 +243,10 @@ async function startKafkaConsumer() {
             windowTotal: 0,
             windowSuccess: 0,
             windowLatencies: [],
+            p50History: [],
+            p90History: [],
+            p99History: [],
+            tpsHistory: [],
           };
           runStatsMap.set(benchmark_run_id, stats);
           console.log(`[Telemetry] Initialized telemetry listener for run ${benchmark_run_id} (${teamName})`);

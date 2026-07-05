@@ -39,13 +39,13 @@ CMD ["./matching-engine"]
     } else {
       filename = 'main.cpp';
       dockerfileContent = `
-FROM alpine:3.18 AS builder
-RUN apk add --no-cache g++ make
+FROM benchmarking-cpp-builder:latest AS builder
 WORKDIR /app
 COPY main.cpp .
 RUN g++ -O3 -std=c++17 -o matching-engine main.cpp -pthread
 
 FROM alpine:3.18
+RUN apk add --no-cache libstdc++
 WORKDIR /app
 COPY --from=builder /app/matching-engine .
 EXPOSE 8080

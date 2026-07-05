@@ -188,6 +188,11 @@ export default function App() {
 
       if (!subRes.ok) {
         const errorData = await subRes.json().catch(() => ({ error: 'Unknown server error' }));
+        if (subRes.status === 404 && errorData.error === 'Contestant not found') {
+          handleLogout();
+          alert('Your team session has expired or the database was reset. Please sign up or log in again.');
+          return;
+        }
         throw new Error(errorData.error || `Source submission failed with status ${subRes.status}`);
       }
 

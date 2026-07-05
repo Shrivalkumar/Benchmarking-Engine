@@ -67,6 +67,14 @@ services:
   # Core Platform Microservices
   # ----------------------------------------------------
 
+  # Pre-baked C++ compiler base containing GCC, Boost, Asio, and Crow framework
+  cpp-builder:
+    build:
+      context: ./core-orchestrator/cpp-builder
+      dockerfile: Dockerfile
+    image: benchmarking-cpp-builder:latest
+    container_name: cpp-builder
+
   # Core Orchestrator - sandboxing management, image compilation, job execution triggers
   core-orchestrator:
     build:
@@ -95,6 +103,8 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+      cpp-builder:
+        condition: service_started
 
   # Telemetry Ingester - processes telemetry streams, calculates score aggregates, pushes live metrics via WebSockets
   telemetry-ingester:
