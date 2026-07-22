@@ -85,7 +85,8 @@ services:
       - PORT=8000
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/benchmarking
       - REDIS_URL=redis://redis:6379
-      - MONGODB_URI=${MONGODB_URI}
+      - JWT_SECRET=${JWT_SECRET:-local-dev-change-me}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-local-dev-internal-token}
       - KAFKA_BROKERS=redpanda:29092
       - DOCKER_SOCKET=/var/run/docker.sock
       - BENCHMARK_NET=benchmarking-net
@@ -138,6 +139,7 @@ services:
     environment:
       - PORT=8081
       - KAFKA_BROKERS=redpanda:29092
+      - ORCHESTRATOR_INTERNAL_TOKEN=${INTERNAL_API_TOKEN:-local-dev-internal-token}
     ports:
       - "8081:8081"
     networks:

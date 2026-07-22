@@ -49,8 +49,8 @@ var httpClient = &http.Client{
 }
 
 var (
-	kafkaWriter *kafka.Writer
-	activeMutex sync.Mutex
+	kafkaWriter  *kafka.Writer
+	activeMutex  sync.Mutex
 	activeCancel context.CancelFunc
 )
 
@@ -59,7 +59,7 @@ func main() {
 	if port == "" {
 		port = "8081"
 	}
-	
+
 	brokers := os.Getenv("KAFKA_BROKERS")
 	if brokers == "" {
 		brokers = "localhost:9092"
@@ -150,7 +150,7 @@ func runStressTest(ctx context.Context, req StartRequest) {
 	var orderIDsMu sync.Mutex
 
 	var wg sync.WaitGroup
-	
+
 	// Split target TPS across concurrent workers
 	tpsPerWorker := float64(req.TPS) / float64(req.Concurrency)
 	intervalPerWorker := time.Duration(float64(time.Second) / tpsPerWorker)
@@ -159,10 +159,10 @@ func runStressTest(ctx context.Context, req StartRequest) {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			
+
 			// Introduce jitter to avoid workers firing at the exact same millisecond
 			time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
-			
+
 			ticker := time.NewTicker(intervalPerWorker)
 			defer ticker.Stop()
 
@@ -263,17 +263,17 @@ func createOrder(targetURL string, orderID string, orderType string) (int, bool)
 	if rand.Intn(2) == 0 {
 		side = "SELL"
 	}
-	
+
 	payload := map[string]interface{}{
 		"order_id": orderID,
 		"type":     orderType,
 		"side":     side,
-		"price":    100.0 + (rand.Float64() * 20.0 - 10.0), // $90 - $110
+		"price":    100.0 + (rand.Float64()*20.0 - 10.0), // $90 - $110
 		"quantity": rand.Intn(100) + 1,
 	}
 
 	jsonBytes, _ := json.Marshal(payload)
-	
+
 	req, err := http.NewRequest("POST", targetURL+"/order", bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		return 0, false
@@ -284,7 +284,7 @@ func createOrder(targetURL string, orderID string, orderType string) (int, bool)
 	if err != nil {
 		return 0, false
 	}
-	
+
 	// Read and discard body to reuse the TCP connection in pool
 	io.Copy(ioutil.Discard, resp.Body)
 	resp.Body.Close()
@@ -332,16 +332,26 @@ func notifyCompletion(runID string) {
 	if orchestratorURL == "" {
 		orchestratorURL = "http://core-orchestrator:8000"
 	}
-	
+
 	completeURL := orchestratorURL + "/benchmark/complete"
 	log.Printf("[Completion] Calling Core Orchestrator at %s", completeURL)
-	
+
 	payload := map[string]string{
 		"benchmark_run_id": runID,
 	}
 	jsonBytes, _ := json.Marshal(payload)
-	
-	resp, err := httpClient.Post(completeURL, "application/json", bytes.NewBuffer(jsonBytes))
+
+	req, err := http.NewRequest(http.MethodPost, completeURL, bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		log.Printf("[Completion] Failed to create Core Orchestrator callback: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := os.Getenv("ORCHESTRATOR_INTERNAL_TOKEN"); token != "" {
+		req.Header.Set("x-internal-token", token)
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Printf("[Completion] Failed to notify Core Orchestrator: %v", err)
 		return

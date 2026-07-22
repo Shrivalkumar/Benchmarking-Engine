@@ -1,17 +1,53 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
-import { initConnections, db, redis, BOT_FLEET_URL, PORT } from './config';
+import { initConnections, db, redis, BOT_FLEET_URL, INTERNAL_API_TOKEN, JWT_SECRET, PORT } from './config';
 import { SandboxService } from './services/sandbox';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import User from './models/User';
-
-const JWT_SECRET = 'IICPC_STRESS_TESTER_SECRET_KEY_2026';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+interface AuthPayload {
+  userId: number;
+  username: string;
+  contestantId: number;
+  teamName: string;
+}
+
+interface AuthedRequest extends Request {
+  user?: AuthPayload;
+}
+
+function normalizeHandle(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9_]/g, '');
+}
+
+function authenticateToken(req: AuthedRequest, res: Response, next: express.NextFunction): any {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : undefined;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication token is required' });
+  }
+
+  try {
+    req.user = jwt.verify(token, JWT_SECRET) as AuthPayload;
+    return next();
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired authentication token' });
+  }
+}
+
+function requireInternalToken(req: Request, res: Response, next: express.NextFunction): any {
+  const token = req.headers['x-internal-token'];
+  if (token !== INTERNAL_API_TOKEN) {
+    return res.status(401).json({ error: 'Invalid internal token' });
+  }
+  return next();
+}
 
 /**
  * Auth: User Signup (register team and credentials in MongoDB + PG)
@@ -23,27 +59,38 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
     return res.status(400).json({ error: 'username, password, and team_name are required' });
   }
 
-  const cleanTeamName = team_name.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const cleanUsername = normalizeHandle(username);
+  const cleanTeamName = normalizeHandle(team_name);
+  if (!cleanUsername) {
+    return res.status(400).json({ error: 'username contains invalid characters. Use letters, numbers, and underscores.' });
+  }
   if (!cleanTeamName) {
     return res.status(400).json({ error: 'team_name contains invalid characters. Use letters, numbers, and underscores.' });
   }
 
+  const client = await db.connect();
   try {
-    // 1. Check if user already exists in MongoDB
-    const existingUser = await User.findOne({ username: username.toLowerCase() });
-    if (existingUser) {
+    await client.query('BEGIN');
+
+    // 1. Check if user or team already has credentials
+    const existingUser = await client.query(
+      'SELECT id FROM users WHERE username = $1 OR team_name = $2',
+      [cleanUsername, cleanTeamName]
+    );
+    if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Username is already taken' });
     }
 
     // 2. Create contestant in PostgreSQL
-    const pgResult = await db.query(
+    const pgResult = await client.query(
       'INSERT INTO contestants (team_name) VALUES ($1) ON CONFLICT (team_name) DO NOTHING RETURNING *',
       [cleanTeamName]
     );
 
     let contestantId: number;
     if (pgResult.rows.length === 0) {
-      const existing = await db.query('SELECT id FROM contestants WHERE team_name = $1', [cleanTeamName]);
+      const existing = await client.query('SELECT id FROM contestants WHERE team_name = $1', [cleanTeamName]);
       contestantId = existing.rows[0].id;
     } else {
       contestantId = pgResult.rows[0].id;
@@ -54,17 +101,20 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
     // 3. Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // 4. Create user in MongoDB
-    const newUser = await User.create({
-      username: username.toLowerCase(),
-      passwordHash,
-      teamName: cleanTeamName,
-      contestantId
-    });
+    // 4. Create user in PostgreSQL
+    const userResult = await client.query(
+      `INSERT INTO users (username, password_hash, team_name, contestant_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, username, team_name, contestant_id`,
+      [cleanUsername, passwordHash, cleanTeamName, contestantId]
+    );
+    const newUser = userResult.rows[0];
+
+    await client.query('COMMIT');
 
     // 5. Generate JWT token
     const token = jwt.sign(
-      { userId: newUser._id, username: newUser.username, contestantId, teamName: cleanTeamName },
+      { userId: newUser.id, username: newUser.username, contestantId, teamName: cleanTeamName },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -77,8 +127,11 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
       contestant_id: contestantId
     });
   } catch (error: any) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('Signup error:', error);
     return res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -93,21 +146,25 @@ app.post('/auth/login', async (req: Request, res: Response): Promise<any> => {
   }
 
   try {
-    // 1. Find user in MongoDB
-    const user = await User.findOne({ username: username.toLowerCase() });
-    if (!user) {
+    // 1. Find user in PostgreSQL
+    const userResult = await db.query(
+      'SELECT id, username, password_hash, team_name, contestant_id FROM users WHERE username = $1',
+      [normalizeHandle(username)]
+    );
+    if (userResult.rows.length === 0) {
       return res.status(400).json({ error: 'Invalid username or password' });
     }
+    const user = userResult.rows[0];
 
     // 2. Compare password hash
-    const isValid = await bcrypt.compare(password, user.passwordHash);
+    const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) {
       return res.status(400).json({ error: 'Invalid username or password' });
     }
 
     // 3. Generate JWT token
     const token = jwt.sign(
-      { userId: user._id, username: user.username, contestantId: user.contestantId, teamName: user.teamName },
+      { userId: user.id, username: user.username, contestantId: user.contestant_id, teamName: user.team_name },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -116,8 +173,8 @@ app.post('/auth/login', async (req: Request, res: Response): Promise<any> => {
       message: 'Login successful',
       token,
       username: user.username,
-      team_name: user.teamName,
-      contestant_id: user.contestantId
+      team_name: user.team_name,
+      contestant_id: user.contestant_id
     });
   } catch (error: any) {
     console.error('Login error:', error);
@@ -162,11 +219,15 @@ app.post('/contestants', async (req: Request, res: Response): Promise<any> => {
 /**
  * 2. Submit Source Code for Compilation & Sandboxing
  */
-app.post('/submissions', async (req: Request, res: Response): Promise<any> => {
+app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Response): Promise<any> => {
   const { contestant_id, source_code, language = 'go' } = req.body;
 
-  if (!contestant_id || !source_code) {
-    return res.status(400).json({ error: 'contestant_id and source_code are required' });
+  if (!source_code) {
+    return res.status(400).json({ error: 'source_code is required' });
+  }
+
+  if (contestant_id && Number(contestant_id) !== req.user!.contestantId) {
+    return res.status(403).json({ error: 'You can only submit code for your own team' });
   }
 
   if (language !== 'go' && language !== 'cpp') {
@@ -175,17 +236,17 @@ app.post('/submissions', async (req: Request, res: Response): Promise<any> => {
 
   try {
     // 1. Verify contestant exists
-    const contestant = await db.query('SELECT * FROM contestants WHERE id = $1', [contestant_id]);
+    const contestant = await db.query('SELECT * FROM contestants WHERE id = $1', [req.user!.contestantId]);
     if (contestant.rows.length === 0) {
       return res.status(404).json({ error: 'Contestant not found' });
     }
 
-    const imageTag = `contestant-sub-temp:${uuidv4()}`;
+    const imageTag = `contestant-sub-${uuidv4()}:latest`;
     
     // 2. Insert submission metadata in PG (status: building)
     const subResult = await db.query(
       'INSERT INTO submissions (contestant_id, docker_image_tag, status) VALUES ($1, $2, $3) RETURNING *',
-      [contestant_id, imageTag, 'building']
+      [req.user!.contestantId, imageTag, 'building']
     );
     const submission = subResult.rows[0];
 
@@ -212,13 +273,16 @@ app.post('/submissions', async (req: Request, res: Response): Promise<any> => {
 /**
  * 3. Retrieve Submission Build Status and Logs
  */
-app.get('/submissions/:id', async (req: Request, res: Response): Promise<any> => {
+app.get('/submissions/:id', authenticateToken, async (req: AuthedRequest, res: Response): Promise<any> => {
   const { id } = req.params;
 
   try {
     const result = await db.query('SELECT * FROM submissions WHERE id = $1', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Submission not found' });
+    }
+    if (result.rows[0].contestant_id !== req.user!.contestantId) {
+      return res.status(403).json({ error: 'You can only view your own submissions' });
     }
     return res.json(result.rows[0]);
   } catch (error: any) {
@@ -229,7 +293,7 @@ app.get('/submissions/:id', async (req: Request, res: Response): Promise<any> =>
 /**
  * 4. Start a Benchmark stress test
  */
-app.post('/benchmark/start', async (req: Request, res: Response): Promise<any> => {
+app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: Response): Promise<any> => {
   const { submission_id, tps = 500, duration_seconds = 30, concurrency = 10 } = req.body;
 
   if (!submission_id) {
@@ -247,12 +311,12 @@ app.post('/benchmark/start', async (req: Request, res: Response): Promise<any> =
     const subResult = await db.query(
       `SELECT s.*, c.team_name FROM submissions s 
        JOIN contestants c ON s.contestant_id = c.id 
-       WHERE s.id = $1`,
-      [submission_id]
+       WHERE s.id = $1 AND s.contestant_id = $2`,
+      [submission_id, req.user!.contestantId]
     );
 
     if (subResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Submission not found' });
+      return res.status(404).json({ error: 'Submission not found for your team' });
     }
 
     const submission = subResult.rows[0];
@@ -322,7 +386,7 @@ app.post('/benchmark/start', async (req: Request, res: Response): Promise<any> =
 /**
  * 5. Complete Benchmark Run Webhook (Called by Bot Fleet or Ingester)
  */
-app.post('/benchmark/complete', async (req: Request, res: Response): Promise<any> => {
+app.post('/benchmark/complete', requireInternalToken, async (req: Request, res: Response): Promise<any> => {
   const { benchmark_run_id } = req.body;
   if (!benchmark_run_id) {
     return res.status(400).json({ error: 'benchmark_run_id is required' });

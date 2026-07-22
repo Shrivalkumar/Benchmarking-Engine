@@ -1,20 +1,16 @@
 import { Pool } from 'pg';
 import { createClient } from 'redis';
 import Docker from 'dockerode';
-import mongoose from 'mongoose';
 
 // Environment variables configuration
 export const PORT = process.env.PORT || 8000;
 export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/benchmarking';
 export const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-export const MONGODB_URI = process.env.MONGODB_URI || '';
-if (!MONGODB_URI) {
-  console.error('❌ CRITICAL ERROR: MONGODB_URI is not defined in environment variables.');
-  process.exit(1);
-}
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS || 'localhost:9092';
 export const BENCHMARK_NET = process.env.BENCHMARK_NET || 'benchmarking-net';
 export const BOT_FLEET_URL = process.env.BOT_FLEET_URL || 'http://localhost:8081';
+export const JWT_SECRET = process.env.JWT_SECRET || 'local-dev-change-me';
+export const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || 'local-dev-internal-token';
 
 // PostgreSQL Pool
 export const db = new Pool({
@@ -39,6 +35,17 @@ async function initializeDatabaseSchema(client: any) {
     CREATE TABLE IF NOT EXISTS contestants (
         id SERIAL PRIMARY KEY,
         team_name VARCHAR(100) UNIQUE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(100) UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        team_name VARCHAR(100) UNIQUE NOT NULL,
+        contestant_id INTEGER UNIQUE REFERENCES contestants(id) ON DELETE CASCADE,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
   `);
@@ -98,10 +105,7 @@ async function initializeDatabaseSchema(client: any) {
 export async function initConnections() {
   await redis.connect();
   console.log('✅ Connected to Redis successfully');
-  
-  await mongoose.connect(MONGODB_URI);
-  console.log('✅ Connected to MongoDB Atlas successfully');
-  
+
   const client = await db.connect();
   try {
     console.log('✅ Connected to PostgreSQL successfully');

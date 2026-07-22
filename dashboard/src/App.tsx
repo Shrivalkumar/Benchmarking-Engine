@@ -127,7 +127,9 @@ export default function App() {
   // Submission Build checker
   const checkBuildStatus = async (subId: number) => {
     try {
-      const res = await fetch(`${ORCHESTRATOR_API}/submissions/${subId}`);
+      const res = await fetch(`${ORCHESTRATOR_API}/submissions/${subId}`, {
+        headers: user ? { 'Authorization': `Bearer ${user.token}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         setBuildStatus(data.status);
@@ -302,7 +304,10 @@ export default function App() {
     try {
       const res = await fetch(`${ORCHESTRATOR_API}/benchmark/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${user.token}`,
+        },
         body: JSON.stringify({
           submission_id: submissionId,
           tps: targetTps,
