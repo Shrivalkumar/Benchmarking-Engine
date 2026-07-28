@@ -10,6 +10,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const MAX_SOURCE_BYTES = 1024 * 1024;
+const MAX_TPS = 5000;
+const MAX_CONCURRENCY = 500;
+const MAX_DURATION_SECONDS = 300;
+
 interface AuthPayload {
   userId: number;
   username: string;
@@ -47,6 +52,26 @@ function requireInternalToken(req: Request, res: Response, next: express.NextFun
     return res.status(401).json({ error: 'Invalid internal token' });
   }
   return next();
+}
+
+async function waitForContestantHealth(targetUrl: string, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'health check timed out';
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${targetUrl}/health`, { signal: AbortSignal.timeout(1000) });
+      if (response.ok) {
+        return;
+      }
+      lastError = `health returned HTTP ${response.status}`;
+    } catch (error: any) {
+      lastError = error.message;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  throw new Error(`Contestant did not become healthy: ${lastError}`);
 }
 
 /**
@@ -226,6 +251,10 @@ app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Resp
     return res.status(400).json({ error: 'source_code is required' });
   }
 
+  if (Buffer.byteLength(source_code, 'utf8') > MAX_SOURCE_BYTES) {
+    return res.status(413).json({ error: 'source_code exceeds the 1MB limit' });
+  }
+
   if (contestant_id && Number(contestant_id) !== req.user!.contestantId) {
     return res.status(403).json({ error: 'You can only submit code for your own team' });
   }
@@ -251,7 +280,7 @@ app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Resp
     const submission = subResult.rows[0];
 
     // 3. Trigger build in background to avoid blocking REST response
-    SandboxService.buildSubmissionImage(submission.id, source_code, language)
+    SandboxService.buildSubmissionImage(submission.id, imageTag, source_code, language)
       .then((buildResult) => {
         console.log(`Build completed for submission ${submission.id} (${language}). Success: ${buildResult.success}`);
       })
@@ -295,9 +324,29 @@ app.get('/submissions/:id', authenticateToken, async (req: AuthedRequest, res: R
  */
 app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: Response): Promise<any> => {
   const { submission_id, tps = 500, duration_seconds = 30, concurrency = 10 } = req.body;
+  const requestedTps = Number(tps);
+  const requestedDuration = Number(duration_seconds);
+  const requestedConcurrency = Number(concurrency);
+  let pendingRunId: string | null = null;
 
   if (!submission_id) {
     return res.status(400).json({ error: 'submission_id is required' });
+  }
+
+  if (
+    !Number.isFinite(requestedTps) ||
+    !Number.isFinite(requestedDuration) ||
+    !Number.isFinite(requestedConcurrency) ||
+    requestedTps < 1 ||
+    requestedTps > MAX_TPS ||
+    requestedConcurrency < 1 ||
+    requestedConcurrency > MAX_CONCURRENCY ||
+    requestedDuration < 5 ||
+    requestedDuration > MAX_DURATION_SECONDS
+  ) {
+    return res.status(400).json({
+      error: `Invalid run parameters. Limits: tps 1-${MAX_TPS}, concurrency 1-${MAX_CONCURRENCY}, duration 5-${MAX_DURATION_SECONDS}s`,
+    });
   }
 
   try {
@@ -325,18 +374,24 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
     }
 
     const runId = uuidv4();
+    pendingRunId = runId;
     const targetHostname = `contestant-run-${runId}`;
 
     // 1. Programmatically start the sandboxed contestant container
     const { containerId } = await SandboxService.startContainer(submission.id, runId);
     activeContainers.set(runId, containerId);
 
+    await waitForContestantHealth(`http://${targetHostname}:8080`);
+
     // 2. Set active run cache in Redis
     await redis.hSet('run:active', {
       run_id: runId,
       team_name: submission.team_name,
+      container_id: containerId,
       started_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + (requestedDuration + 30) * 1000).toISOString(),
     });
+    await redis.expire('run:active', requestedDuration + 30);
 
     // 3. Create run entry in PostgreSQL
     await db.query(
@@ -355,21 +410,22 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
       body: JSON.stringify({
         benchmark_run_id: runId,
         target_url: `http://${targetHostname}:8080`,
-        duration_seconds: Number(duration_seconds),
-        tps: Number(tps),
-        concurrency: Number(concurrency),
+        duration_seconds: requestedDuration,
+        tps: requestedTps,
+        concurrency: requestedConcurrency,
       }),
     });
 
     if (!triggerResponse.ok) {
       const errorText = await triggerResponse.text();
+      await cleanupRun(runId, 'bot-fleet-start-failed', 'failed');
       throw new Error(`Failed to start load generator in Bot Fleet: ${errorText}`);
     }
 
     // 5. Establish safety cleanup timeout (duration + 10 seconds leeway)
     setTimeout(async () => {
       await cleanupRun(runId, 'timeout');
-    }, (Number(duration_seconds) + 10) * 1000);
+    }, (requestedDuration + 10) * 1000);
 
     return res.status(202).json({
       message: 'Benchmark test triggered successfully.',
@@ -378,6 +434,9 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
       target: `http://${targetHostname}:8080`,
     });
   } catch (error: any) {
+    if (pendingRunId) {
+      await cleanupRun(pendingRunId, 'benchmark-start-failed', 'failed');
+    }
     console.error('Error starting benchmark:', error);
     return res.status(500).json({ error: error.message });
   }
@@ -452,10 +511,38 @@ app.get('/leaderboard', async (req: Request, res: Response): Promise<any> => {
 /**
  * Helper to clean up contestant container and active Redis flags
  */
-async function cleanupRun(runId: string, triggerSource: string) {
-  const containerId = activeContainers.get(runId);
+async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'completed' | 'failed' = 'completed') {
+  let containerId: string | undefined = activeContainers.get(runId);
   if (!containerId) {
-    return; // Already cleaned up
+    try {
+      const active = await redis.hGetAll('run:active');
+      if (active && active.run_id === runId && active.container_id) {
+        containerId = active.container_id;
+      }
+    } catch (err) {
+      console.error('Failed to read active run from Redis:', err);
+    }
+  }
+  if (!containerId) {
+    containerId = await SandboxService.findContainerIdByRun(runId) || undefined;
+  }
+  if (!containerId) {
+    await redis.hGetAll('run:active')
+      .then((active) => {
+        if (active?.run_id === runId) {
+          return redis.del('run:active');
+        }
+        return undefined;
+      })
+      .catch(() => {});
+    await db.query(
+      `UPDATE benchmark_runs
+       SET status = CASE WHEN status = 'running' THEN $2::varchar ELSE status END,
+           ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP)
+       WHERE id = $1`,
+      [runId, finalStatus]
+    ).catch(() => {});
+    return;
   }
 
   console.log(`[Cleanup] Cleaning up active run ${runId} triggered by ${triggerSource}`);
@@ -484,10 +571,10 @@ async function cleanupRun(runId: string, triggerSource: string) {
   try {
     await db.query(
       `UPDATE benchmark_runs 
-       SET status = CASE WHEN status = 'running' THEN 'completed'::varchar ELSE status END, 
+       SET status = CASE WHEN status = 'running' THEN $2::varchar ELSE status END, 
            ended_at = CURRENT_TIMESTAMP 
        WHERE id = $1`,
-      [runId]
+      [runId, finalStatus]
     );
   } catch (err) {
     console.error('Failed to update benchmark run status in PG:', err);

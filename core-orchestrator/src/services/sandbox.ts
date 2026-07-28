@@ -10,6 +10,7 @@ export class SandboxService {
    */
   static async buildSubmissionImage(
     submissionId: number,
+    imageTag: string,
     sourceCode: string,
     language: 'go' | 'cpp'
   ): Promise<{ success: boolean; imageTag: string; logs: string }> {
@@ -59,8 +60,6 @@ CMD ["./matching-engine"]
     // Create a secure multi-stage Dockerfile
     fs.writeFileSync(path.join(buildDir, 'Dockerfile'), dockerfileContent);
 
-    const imageTag = `contestant-sub-${submissionId}:latest`;
-
     return new Promise((resolve) => {
       console.log(`Building Docker image ${imageTag} in ${buildDir}...`);
       
@@ -77,8 +76,8 @@ CMD ["./matching-engine"]
 
         // Update database status
         await db.query(
-          'UPDATE submissions SET status = $1, build_logs = $2 WHERE id = $3',
-          [success ? 'built' : 'failed', logs, submissionId]
+          'UPDATE submissions SET docker_image_tag = $1, status = $2, build_logs = $3 WHERE id = $4',
+          [imageTag, success ? 'built' : 'failed', logs, submissionId]
         );
 
         resolve({
@@ -95,7 +94,15 @@ CMD ["./matching-engine"]
    * Limits memory to 512MB and CPU to 1 core, attached to benchmarking-net.
    */
   static async startContainer(submissionId: number, runId: string): Promise<{ containerId: string; hostname: string }> {
-    const imageTag = `contestant-sub-${submissionId}:latest`;
+    const imageResult = await db.query(
+      'SELECT docker_image_tag FROM submissions WHERE id = $1 AND status = $2',
+      [submissionId, 'built']
+    );
+    if (imageResult.rows.length === 0) {
+      throw new Error(`Submission ${submissionId} is not built or does not exist`);
+    }
+
+    const imageTag = imageResult.rows[0].docker_image_tag;
     const hostname = `contestant-run-${runId}`;
 
     console.log(`Spawning sandboxed container ${hostname} using image ${imageTag}...`);
@@ -117,6 +124,11 @@ CMD ["./matching-engine"]
       ExposedPorts: {
         '8080/tcp': {},
       },
+      Labels: {
+        'benchmarking.platform': 'true',
+        'benchmarking.run_id': runId,
+        'benchmarking.submission_id': String(submissionId),
+      },
       HostConfig: {
         // Attach to the isolated bridge network
         NetworkMode: BENCHMARK_NET,
@@ -125,10 +137,21 @@ CMD ["./matching-engine"]
         MemorySwap: 512 * 1024 * 1024, // No swap to disk allowed
         // CPU limit: 1 core (represented by NanoCpus: 1,000,000,000)
         NanoCpus: 1000000000,
+        PidsLimit: 256,
+        ReadonlyRootfs: true,
+        CapDrop: ['ALL'],
+        SecurityOpt: ['no-new-privileges:true'],
         // Security protections: Read-only root filesystem where possible
         // (For alpine, we mount a tmpfs on /tmp for scratch space)
         Tmpfs: {
           '/tmp': 'rw,noexec,nosuid,size=65536k',
+        },
+        LogConfig: {
+          Type: 'json-file',
+          Config: {
+            'max-size': '10m',
+            'max-file': '2',
+          },
         },
       },
     });
@@ -147,19 +170,38 @@ CMD ["./matching-engine"]
    * Stops and removes a running sandboxed container.
    */
   static async stopContainer(containerId: string): Promise<void> {
+    const container = docker.getContainer(containerId);
+
     try {
       console.log(`Stopping container ${containerId}...`);
-      const container = docker.getContainer(containerId);
-      
       // Stop the container (timeout after 5 seconds, then SIGKILL)
       await container.stop({ t: 5 });
-      
-      console.log(`Removing container ${containerId}...`);
-      await container.remove();
-      console.log(`Successfully removed container ${containerId}`);
-    } catch (error) {
-      console.error(`Error tearing down container ${containerId}:`, error);
-      throw error;
+    } catch (error: any) {
+      if (error.statusCode !== 304 && error.statusCode !== 404) {
+        console.error(`Error stopping container ${containerId}:`, error);
+      }
     }
+
+    try {
+      console.log(`Removing container ${containerId}...`);
+      await container.remove({ force: true });
+      console.log(`Successfully removed container ${containerId}`);
+    } catch (error: any) {
+      if (error.statusCode !== 404) {
+        console.error(`Error removing container ${containerId}:`, error);
+        throw error;
+      }
+    }
+  }
+
+  static async findContainerIdByRun(runId: string): Promise<string | null> {
+    const containers = await docker.listContainers({
+      all: true,
+      filters: {
+        label: [`benchmarking.run_id=${runId}`],
+      },
+    });
+
+    return containers[0]?.Id || null;
   }
 }

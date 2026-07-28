@@ -174,3 +174,4 @@ networks:
   benchmarking-net:
     name: benchmarking-net
     driver: bridge
+    internal: true
