@@ -474,29 +474,32 @@ app.get('/leaderboard', async (req: Request, res: Response): Promise<any> => {
         const teamName = item.value;
         const score = item.score;
         
-        // Fetch peak metrics for team (ignoring legacy 0ms corrupted runs)
+        // Fetch the single best completed run for this team so displayed metrics are internally consistent.
         const stats = await db.query(
-          `SELECT 
-             MAX(avg_tps) as max_tps, 
-             MIN(p50_latency_ms) as min_p50,
-             MIN(p90_latency_ms) as min_p90,
-             MIN(p99_latency_ms) as min_p99, 
-             MAX(success_rate) as max_success
+          `SELECT
+             avg_tps,
+             p50_latency_ms,
+             p90_latency_ms,
+             p99_latency_ms,
+             success_rate
            FROM benchmark_runs br
            JOIN submissions s ON br.submission_id = s.id
            JOIN contestants c ON s.contestant_id = c.id
-           WHERE c.team_name = $1 AND br.status = 'completed' AND br.p50_latency_ms > 0`,
+           WHERE c.team_name = $1 AND br.status = 'completed' AND br.p50_latency_ms > 0
+           ORDER BY ((br.avg_tps * (br.success_rate / 100.0)) / (br.p90_latency_ms + 1.0)) DESC
+           LIMIT 1`,
           [teamName]
         );
+        const bestRun = stats.rows[0];
 
         return {
           team_name: teamName,
           score: score,
-          peak_tps: Number(stats.rows[0]?.max_tps || 0),
-          p50_latency: Number(stats.rows[0]?.min_p50 || 0),
-          p90_latency: Number(stats.rows[0]?.min_p90 || 0),
-          p99_latency: Number(stats.rows[0]?.min_p99 || 0),
-          success_rate: Number(stats.rows[0]?.max_success || 0),
+          peak_tps: Number(bestRun?.avg_tps || 0),
+          p50_latency: Number(bestRun?.p50_latency_ms || 0),
+          p90_latency: Number(bestRun?.p90_latency_ms || 0),
+          p99_latency: Number(bestRun?.p99_latency_ms || 0),
+          success_rate: Number(bestRun?.success_rate || 0),
         };
       })
     );

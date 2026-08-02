@@ -26,18 +26,14 @@ const wss = new WebSocketServer({ noServer: true });
 interface RunStats {
   runId: string;
   teamName: string;
+  startedAtMs: number;
   totalOrders: number;
   successCount: number;
-  cumulativeLatencyNs: number;
+  latencySamplesMs: number[];
   // Sliding 1-second window variables
   windowTotal: number;
   windowSuccess: number;
   windowLatencies: number[]; // stored in milliseconds
-  // Running histories to compute averages
-  p50History: number[];
-  p90History: number[];
-  p99History: number[];
-  tpsHistory: number[];
 }
 
 const runStatsMap = new Map<string, RunStats>();
@@ -72,6 +68,24 @@ function broadcast(payload: any) {
   }
 }
 
+function percentile(sortedValues: number[], percentileRank: number) {
+  if (sortedValues.length === 0) return 0;
+  const index = Math.min(
+    sortedValues.length - 1,
+    Math.ceil((percentileRank / 100) * sortedValues.length) - 1
+  );
+  return sortedValues[index];
+}
+
+async function updateBestLeaderboardScore(teamName: string, score: number) {
+  if (score <= 0) return;
+
+  const existingScore = await redis.zScore('leaderboard', teamName);
+  if (existingScore === null || score > existingScore) {
+    await redis.zAdd('leaderboard', { score, value: teamName });
+  }
+}
+
 /**
  * Main Telemetry Calculation Pipeline (Runs every 1 second)
  */
@@ -79,55 +93,34 @@ setInterval(async () => {
   if (runStatsMap.size === 0) return;
 
   for (const [runId, stats] of runStatsMap.entries()) {
-    // Safeguard to initialize history arrays if needed
-    if (!stats.p50History) stats.p50History = [];
-    if (!stats.p90History) stats.p90History = [];
-    if (!stats.p99History) stats.p99History = [];
-    if (!stats.tpsHistory) stats.tpsHistory = [];
-
     // 1. Calculate TPS (transactions in this 1s window)
     const tps = stats.windowTotal;
 
     // 2. Sort window latencies to compute percentiles
-    const latencies = [...stats.windowLatencies].sort((a, b) => a - b);
-    const count = latencies.length;
-
-    let p50 = 0;
-    let p90 = 0;
-    let p99 = 0;
-
-    if (count > 0) {
-      p50 = latencies[Math.floor(count * 0.50)];
-      p90 = latencies[Math.floor(count * 0.90)];
-      p99 = latencies[Math.floor(count * 0.99)];
-
-      // Only push to history when active load is processed to avoid skewing averages during wind-down
-      stats.p50History.push(p50);
-      stats.p90History.push(p90);
-      stats.p99History.push(p99);
-      stats.tpsHistory.push(tps);
-    }
+    const windowLatencies = [...stats.windowLatencies].sort((a, b) => a - b);
+    const p50 = percentile(windowLatencies, 50);
+    const p90 = percentile(windowLatencies, 90);
+    const p99 = percentile(windowLatencies, 99);
 
     const windowSuccessRate = stats.windowTotal > 0 ? stats.windowSuccess / stats.windowTotal : 0;
     const overallSuccessRate = stats.totalOrders > 0 ? stats.successCount / stats.totalOrders : 0;
 
-    // Compute running averages across all active load-generating seconds
-    const avgP50 = stats.p50History.length > 0 ? stats.p50History.reduce((a, b) => a + b, 0) / stats.p50History.length : 0;
-    const avgP90 = stats.p90History.length > 0 ? stats.p90History.reduce((a, b) => a + b, 0) / stats.p90History.length : 0;
-    const avgP99 = stats.p99History.length > 0 ? stats.p99History.reduce((a, b) => a + b, 0) / stats.p99History.length : 0;
-    const avgTps = stats.tpsHistory.length > 0 ? stats.tpsHistory.reduce((a, b) => a + b, 0) / stats.tpsHistory.length : 0;
+    const elapsedSeconds = Math.max(1, (Date.now() - stats.startedAtMs) / 1000);
+    const avgTps = stats.totalOrders / elapsedSeconds;
+    const allLatencies = [...stats.latencySamplesMs].sort((a, b) => a - b);
+    const runP50 = percentile(allLatencies, 50);
+    const runP90 = percentile(allLatencies, 90);
+    const runP99 = percentile(allLatencies, 99);
 
     // Overall Score represents the sustained average composite performance over the run
-    const overallScore = Number(((avgTps * overallSuccessRate) / (avgP90 + 1.0)).toFixed(2));
+    const overallScore = Number(((avgTps * overallSuccessRate) / (runP90 + 1.0)).toFixed(2));
     
     // Live stream tick shows current second metrics
     const currentTickScore = Number(((tps * windowSuccessRate) / (p90 + 1.0)).toFixed(2));
 
     // Update Redis Sorted Set for the Leaderboard using the overall running average score
     try {
-      if (overallScore > 0) {
-        await redis.zAdd('leaderboard', { score: overallScore, value: stats.teamName });
-      }
+      await updateBestLeaderboardScore(stats.teamName, overallScore);
     } catch (err) {
       console.error('Failed to update Redis leaderboard:', err);
     }
@@ -143,7 +136,15 @@ setInterval(async () => {
              p99_latency_ms = $5, 
              avg_tps = $6
          WHERE id = $7`,
-        [stats.totalOrders, overallSuccessRate, avgP50, avgP90, avgP99, avgTps, runId]
+        [
+          stats.totalOrders,
+          Number((overallSuccessRate * 100).toFixed(2)),
+          runP50,
+          runP90,
+          runP99,
+          avgTps,
+          runId
+        ]
       );
     } catch (err) {
       console.error('Failed to update benchmark run in Postgres:', err);
@@ -237,16 +238,13 @@ async function startKafkaConsumer() {
           stats = {
             runId: benchmark_run_id,
             teamName,
+            startedAtMs: Date.now(),
             totalOrders: 0,
             successCount: 0,
-            cumulativeLatencyNs: 0,
+            latencySamplesMs: [],
             windowTotal: 0,
             windowSuccess: 0,
             windowLatencies: [],
-            p50History: [],
-            p90History: [],
-            p99History: [],
-            tpsHistory: [],
           };
           runStatsMap.set(benchmark_run_id, stats);
           console.log(`[Telemetry] Initialized telemetry listener for run ${benchmark_run_id} (${teamName})`);
@@ -258,7 +256,7 @@ async function startKafkaConsumer() {
         // Update overall aggregates
         stats.totalOrders++;
         if (is_success) stats.successCount++;
-        stats.cumulativeLatencyNs += latency_ns;
+        stats.latencySamplesMs.push(latencyMs);
 
         // Update current 1-second window metrics
         stats.windowTotal++;
