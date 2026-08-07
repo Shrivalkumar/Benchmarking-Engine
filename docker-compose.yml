@@ -154,6 +154,9 @@ services:
       context: ./dashboard
       dockerfile: Dockerfile
     container_name: dashboard
+    environment:
+      - VITE_ORCHESTRATOR_API=${VITE_ORCHESTRATOR_API:-http://localhost:8010}
+      - VITE_TELEMETRY_WS=${VITE_TELEMETRY_WS:-ws://localhost:8001}
     ports:
       - "3000:3000"
     networks:

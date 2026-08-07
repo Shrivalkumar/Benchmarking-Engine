@@ -5,10 +5,7 @@ import {
   Upload, 
   Database, 
   TrendingUp, 
-  ShieldAlert, 
-  Zap, 
   RefreshCw, 
-  Users, 
   Award 
 } from 'lucide-react';
 import { 
@@ -62,8 +59,8 @@ interface ChartDataPoint {
 
 export default function App() {
   // Navigation & Connection configurations
-  const ORCHESTRATOR_API = 'http://localhost:8010';
-  const TELEMETRY_WS = 'ws://localhost:8001';
+  const ORCHESTRATOR_API = import.meta.env.VITE_ORCHESTRATOR_API || 'http://localhost:8010';
+  const TELEMETRY_WS = import.meta.env.VITE_TELEMETRY_WS || 'ws://localhost:8001';
 
   // Auth Session States
   const [user, setUser] = useState<AuthUser | null>(() => {
@@ -80,7 +77,6 @@ export default function App() {
   // API state
   const [standings, setStandings] = useState<Standing[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [activeRunTeam, setActiveRunTeam] = useState<string | null>(null);
 
   // Form states
   const [sourceCode, setSourceCode] = useState('');
@@ -103,7 +99,7 @@ export default function App() {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Fetch standings on mount
   useEffect(() => {
@@ -153,7 +149,7 @@ export default function App() {
 
   // Poll build logs
   useEffect(() => {
-    let pollInterval: NodeJS.Timeout;
+    let pollInterval: ReturnType<typeof setInterval>;
     if (isBuilding && submissionId !== null) {
       pollInterval = setInterval(async () => {
         const done = await checkBuildStatus(submissionId);
@@ -293,6 +289,11 @@ export default function App() {
 
   // Start stress test
   const handleStartBenchmark = async () => {
+    if (!user) {
+      alert('Please log in first');
+      return;
+    }
+
     if (!submissionId) {
       alert('Please upload and build your code first!');
       return;
@@ -325,7 +326,6 @@ export default function App() {
 
       const data = await res.json();
       setActiveRunId(data.benchmark_run_id);
-      setActiveRunTeam(data.team_name);
       connectTelemetryWS(data.benchmark_run_id);
 
       // Setup UI countdown timer
@@ -661,7 +661,7 @@ export default function App() {
                       Live stress stream
                     </span>
                     <span className="text-[10px] text-zinc-500 font-mono">
-                      RUN: {activeRunId.slice(0, 8)}
+                      RUN: {activeRunId.slice(0, 8)} | TEAM: {liveMetrics?.team_name || user.team_name}
                     </span>
                   </div>
 
