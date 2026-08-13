@@ -12,6 +12,17 @@ data:
   DOCKER_HOST: "tcp://localhost:2375" # Points to the local DinD sidecar
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-secrets
+  namespace: default
+type: Opaque
+stringData:
+  JWT_SECRET: "replace-with-a-long-random-secret"
+  INTERNAL_API_TOKEN: "replace-with-a-long-random-internal-token"
+  ORCHESTRATOR_INTERNAL_TOKEN: "replace-with-a-long-random-internal-token"
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-pvc
@@ -177,6 +188,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: platform-config
+            - secretRef:
+                name: platform-secrets
           ports:
             - containerPort: 8000
           resources:
@@ -237,6 +250,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: platform-config
+            - secretRef:
+                name: platform-secrets
           ports:
             - containerPort: 8001
           resources:
@@ -282,6 +297,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: platform-config
+            - secretRef:
+                name: platform-secrets
           ports:
             - containerPort: 8081
           resources:

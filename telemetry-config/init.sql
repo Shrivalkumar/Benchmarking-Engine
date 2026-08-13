@@ -7,6 +7,16 @@ CREATE TABLE IF NOT EXISTS contestants (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create users table
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    team_name VARCHAR(100) UNIQUE NOT NULL,
+    contestant_id INTEGER UNIQUE REFERENCES contestants(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create submissions table
 CREATE TABLE IF NOT EXISTS submissions (
     id SERIAL PRIMARY KEY,
@@ -23,7 +33,7 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     submission_id INTEGER REFERENCES submissions(id) ON DELETE CASCADE,
     status VARCHAR(50) DEFAULT 'pending', -- running, completed, failed
     total_orders_sent INTEGER DEFAULT 0,
-    success_rate DOUBLE PRECISION DEFAULT 0.0,
+    success_rate DOUBLE PRECISION DEFAULT 0.0, -- stored as a percentage from 0 to 100
     p50_latency_ms DOUBLE PRECISION DEFAULT 0.0,
     p90_latency_ms DOUBLE PRECISION DEFAULT 0.0,
     p99_latency_ms DOUBLE PRECISION DEFAULT 0.0,

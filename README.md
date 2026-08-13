@@ -44,10 +44,11 @@ flowchart TD
 
 ### 2.1 Core Orchestrator (Node.js + TypeScript)
 - **Code Upload & Build:** Accepts submissions (e.g., raw binaries or code zip files), writes them to disk, and uses the Docker Engine API to programmatically build a secure container image.
-- **Sandboxed Hosting:** Spawns the contestant container on a dedicated, isolated Docker bridge network (`benchmarking-net`) with strict resource constraints:
+- **Authentication & Ownership:** Stores user/team credentials in PostgreSQL, issues JWTs, and restricts submission/build/run actions to the authenticated team.
+- **Sandboxed Hosting:** Spawns the contestant container on a dedicated internal Docker bridge network (`benchmarking-net`) with strict resource constraints:
   - Memory: `--memory=512m` (with swap disabled).
   - CPU: `--cpus=1` (limiting compute resource exploitation).
-  - Security: Read-only root filesystem where applicable, dropping capabilities.
+  - Security: Read-only root filesystem, no new privileges, dropped capabilities, PID limits, bounded logs, and tmpfs scratch space.
 - **Test Orchestration:** Verifies contestant health (`/health`), triggers the Go Bot Fleet via HTTP or Kafka control payloads, monitors contestant resource consumption, and handles teardown of contestant containers when a test ends.
 
 ### 2.2 Go Bot Fleet (Go)
@@ -57,17 +58,17 @@ flowchart TD
   - `DELETE /order/:id` (Canceling Orders)
 - **Telemetry Timestamping:** Captures nanosecond-precision timestamps right before writing to the network socket and immediately after reading the complete response:
   $$\Delta t = t_{\text{end}} - t_{\text{start}}$$
-- **Kafka Streaming:** Ships raw JSON payloads containing metrics (`order_id`, `type`, `latency_ns`, `status_code`, `timestamp`) into the `telemetry-stream` Kafka topic.
+- **Kafka Streaming:** Ships raw JSON payloads containing metrics (`order_id`, `type`, `latency_ns`, `status_code`, `is_success`, `timestamp`) into the `telemetry-stream` Kafka topic.
 
 ### 2.3 Telemetry Ingester & WebSocket Server (Node.js + TypeScript)
 - **Kafka Processing Pipeline:** Consumes the high-throughput `telemetry-stream` topic.
 - **Metric Computation:** Tracks sliding windows of:
   - **Throughput:** Transactions per second (TPS).
   - **Latency:** p50, p90, and p99 percentiles.
-  - **Correctness:** Computes error rates and ensures response format validation.
+  - **Correctness:** Computes status-based success rates from bot-fleet telemetry.
 - **Persistence Layer:** Periodically inserts aggregated benchmark metrics into PostgreSQL.
-- **Leaderboard Updates:** Updates the Redis Sorted Set (`leaderboard`) with a composite performance score:
-  $$\text{Composite Score} = \frac{\text{TPS}}{P_{90} \text{ Latency (ms)} + 1}$$
+- **Leaderboard Updates:** Updates the Redis Sorted Set (`leaderboard`) with each team's best composite performance score:
+  $$\text{Composite Score} = \frac{\text{TPS} \times \text{success rate}}{P_{90} \text{ Latency (ms)} + 1}$$
 - **Real-Time Distribution:** Exposes a WebSocket server (`ws://localhost:8001`) broadcasting real-time TPS, latency charts, and leaderboard updates to frontend clients.
 
 ### 2.4 React Frontend Dashboard (Vite + Tailwind CSS + Lucide)
@@ -80,13 +81,23 @@ flowchart TD
 ## 3. Data Storage & Schema Design
 
 ### 3.1 PostgreSQL (Relational Storage)
-Used for structured, persistent metadata like contestant registration, submission status, and historical benchmark logs.
+Used for structured, persistent metadata like users, contestant registration, submission status, and historical benchmark logs.
 
 ```sql
 -- Contestants table
 CREATE TABLE IF NOT EXISTS contestants (
     id SERIAL PRIMARY KEY,
     team_name VARCHAR(100) UNIQUE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Users table
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    team_name VARCHAR(100) UNIQUE NOT NULL,
+    contestant_id INTEGER UNIQUE REFERENCES contestants(id) ON DELETE CASCADE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -106,7 +117,7 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     submission_id INTEGER REFERENCES submissions(id) ON DELETE CASCADE,
     status VARCHAR(50) DEFAULT 'pending', -- running, completed, failed
     total_orders_sent INTEGER DEFAULT 0,
-    success_rate DOUBLE PRECISION DEFAULT 0.0,
+    success_rate DOUBLE PRECISION DEFAULT 0.0, -- stored as a percentage from 0 to 100
     p50_latency_ms DOUBLE PRECISION DEFAULT 0.0,
     p90_latency_ms DOUBLE PRECISION DEFAULT 0.0,
     p99_latency_ms DOUBLE PRECISION DEFAULT 0.0,
@@ -119,9 +130,9 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
 ### 3.2 Redis (In-Memory Leaderboard)
 - **Key:** `leaderboard` (Sorted Set `ZSET`)
   - **Member:** `team_name`
-  - **Score:** Composite value calculated as $\text{TPS} / (P_{90}\text{ Latency (ms)} + 1)$. Using standard ZSET operations allows $O(\log N)$ inserts and instant $O(N)$ retrieval of the top rankings.
+  - **Score:** Best completed run score calculated as $\text{TPS} \times \text{success rate} / (P_{90}\text{ Latency (ms)} + 1)$. Using standard ZSET operations allows $O(\log N)$ inserts and instant retrieval of top rankings.
 - **Key:** `run:active` (Hash)
-  - Stores currently active run details (`run_id`, `team_name`, `started_at`).
+  - Stores currently active run details (`run_id`, `team_name`, `container_id`, `started_at`, `expires_at`).
 
 ---
 
@@ -165,11 +176,11 @@ cd Benchmarking-Engine
 ```
 
 ### 5.2 Step 2: Configure Environment Variables
-Create a `.env` file in the root of the directory to store your MongoDB connection string (this file is automatically ignored by Git to prevent security leaks):
+Create a `.env` file in the root of the directory for local secrets and dashboard endpoint overrides. You can start from `.env.example`:
 ```bash
-echo "MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.mongodb.net/benchmarking?appName=Cluster0" > .env
+cp .env.example .env
 ```
-Replace the placeholder with your actual MongoDB Atlas connection credentials.
+Replace `JWT_SECRET` and `INTERNAL_API_TOKEN` with long random values before running anything beyond local development.
 
 ### 5.3 Step 3: Spin Up the Services
 Run the following command to automatically pull, build, and start all 7 microservices in the background:
@@ -198,4 +209,3 @@ Manage your local environment using the following standard commands:
 * **Rebuild container images:** `make build` (or `docker compose build --no-cache`)
 * **Inspect logs in real-time:** `make logs` (or `docker compose logs -f`)
 * **Check service status:** `make ps` (or `docker compose ps`)
-
