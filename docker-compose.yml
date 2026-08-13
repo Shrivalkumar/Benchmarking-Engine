@@ -22,7 +22,7 @@ services:
       - "9092:9092"
       - "19644:9644" # Admin HTTP API
     networks:
-      - benchmarking-net
+      - platform-net
     healthcheck:
       test: ["CMD", "rpk", "cluster", "info"]
       interval: 5s
@@ -36,7 +36,7 @@ services:
     ports:
       - "6379:6379"
     networks:
-      - benchmarking-net
+      - platform-net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -54,7 +54,7 @@ services:
     ports:
       - "5433:5432"
     networks:
-      - benchmarking-net
+      - platform-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d benchmarking"]
       interval: 5s
@@ -87,14 +87,15 @@ services:
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-local-dev-internal-token}
       - KAFKA_BROKERS=redpanda:29092
       - DOCKER_SOCKET=/var/run/docker.sock
-      - BENCHMARK_NET=benchmarking-net
+      - BENCHMARK_NET=sandbox-net
       - BOT_FLEET_URL=http://bot-fleet:8081
     ports:
       - "8010:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Programmatically manage Docker
     networks:
-      - benchmarking-net
+      - platform-net
+      - sandbox-net
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,7 +120,7 @@ services:
     ports:
       - "8001:8001"
     networks:
-      - benchmarking-net
+      - platform-net
     depends_on:
       postgres:
         condition: service_healthy
@@ -141,7 +142,8 @@ services:
     ports:
       - "8081:8081"
     networks:
-      - benchmarking-net
+      - platform-net
+      - sandbox-net
     depends_on:
       redpanda:
         condition: service_healthy
@@ -153,12 +155,12 @@ services:
       dockerfile: Dockerfile
     container_name: dashboard
     environment:
-      - VITE_ORCHESTRATOR_API=${VITE_ORCHESTRATOR_API:-http://localhost:8010}
-      - VITE_TELEMETRY_WS=${VITE_TELEMETRY_WS:-ws://localhost:8001}
+      - VITE_ORCHESTRATOR_API=${VITE_ORCHESTRATOR_API:-http://127.0.0.1:8010}
+      - VITE_TELEMETRY_WS=${VITE_TELEMETRY_WS:-ws://127.0.0.1:8001}
     ports:
       - "3000:3000"
     networks:
-      - benchmarking-net
+      - platform-net
 
   # Mock Contestant - A test subject container to validate the flow
   mock-contestant:
@@ -169,10 +171,13 @@ services:
     ports:
       - "8082:8080"
     networks:
-      - benchmarking-net
+      - sandbox-net
 
 networks:
-  benchmarking-net:
-    name: benchmarking-net
+  platform-net:
+    name: platform-net
+    driver: bridge
+  sandbox-net:
+    name: sandbox-net
     driver: bridge
     internal: true

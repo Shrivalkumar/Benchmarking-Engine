@@ -45,7 +45,7 @@ flowchart TD
 ### 2.1 Core Orchestrator (Node.js + TypeScript)
 - **Code Upload & Build:** Accepts submissions (e.g., raw binaries or code zip files), writes them to disk, and uses the Docker Engine API to programmatically build a secure container image.
 - **Authentication & Ownership:** Stores user/team credentials in PostgreSQL, issues JWTs, and restricts submission/build/run actions to the authenticated team.
-- **Sandboxed Hosting:** Spawns the contestant container on a dedicated internal Docker bridge network (`benchmarking-net`) with strict resource constraints:
+- **Sandboxed Hosting:** Spawns the contestant container on a dedicated internal Docker bridge network (`sandbox-net`) with strict resource constraints:
   - Memory: `--memory=512m` (with swap disabled).
   - CPU: `--cpus=1` (limiting compute resource exploitation).
   - Security: Read-only root filesystem, no new privileges, dropped capabilities, PID limits, bounded logs, and tmpfs scratch space.
@@ -138,17 +138,19 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
 
 ## 4. Networking & Sandboxing Architecture
 
-To isolate contestant containers while allowing the Go Bot Fleet to execute high-volume benchmarks, we deploy an isolated Docker network.
+To isolate contestant containers while allowing the Go Bot Fleet to execute high-volume benchmarks, local Compose uses two Docker networks:
+- `platform-net`: normal bridge network for Postgres, Redis, Redpanda, dashboard, and host-published API ports.
+- `sandbox-net`: internal bridge network for contestant containers plus the orchestrator and bot fleet.
 
 ```
        [ Docker Host Socket ]
                  | (read/write access to orchestrator)
        [ Core Orchestrator ]
                  |
-                 | (spawns container on "benchmarking-net")
+                 | (spawns container on "sandbox-net")
                  v
    +---------------------------------------------+
-   |             benchmarking-net                |
+   |             sandbox-net                     |
    |                                             |
    |   [ Contestant Container (e.g. 172.20.0.3) ]| (restricted by cgroups CPU/Mem)
    |        ^                                    |
@@ -160,7 +162,7 @@ To isolate contestant containers while allowing the Go Bot Fleet to execute high
 Contestant containers are launched with:
 - `--cpus=1` (CPU pinning / limiting concurrency amplification)
 - `--memory=512m` (Strict memory limits to prevent host system crashes)
-- `--network=benchmarking-net` (No route to outside internet, securing host environment from network egress)
+- `--network=sandbox-net` (No route to outside internet, securing host environment from network egress)
 
 ---
 
@@ -196,7 +198,9 @@ The services will initialize in the correct order:
 
 ### 5.4 Step 4: Access the Dashboard
 Once the services are active, open your web browser and navigate to:
-👉 **`http://localhost:3000`**
+👉 **`http://127.0.0.1:3000`**
+
+Use `127.0.0.1` rather than `localhost` if you have another local dev server listening on IPv6 loopback.
 
 ### 5.5 Step 5: Test and Benchmark
 1. **Register/Sign Up:** Click **Sign up here**, create a handler (username), password, and team identifier to log in.

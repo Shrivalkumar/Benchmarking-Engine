@@ -722,7 +722,7 @@ export default function App() {
                   <Award className="w-5 h-5 text-yellow-500" />
                   STANDINGS & METRIC RANKINGS
                 </h2>
-                <span className="text-[10px] font-mono text-zinc-500 uppercase">Composite Score = TPS / (P90 Latency + 1)</span>
+                <span className="text-[10px] font-mono text-zinc-500 uppercase">Composite Score = TPS * Success / (P90 Latency + 1)</span>
               </div>
 
               <div className="overflow-x-auto border border-[#e1e4e6] rounded">

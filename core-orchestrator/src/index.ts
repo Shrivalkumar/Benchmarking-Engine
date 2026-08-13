@@ -75,7 +75,7 @@ async function waitForContestantHealth(targetUrl: string, timeoutMs = 15000) {
 }
 
 /**
- * Auth: User Signup (register team and credentials in MongoDB + PG)
+ * Auth: User Signup (register team and credentials in PostgreSQL)
  */
 app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
   const { username, password, team_name } = req.body;
