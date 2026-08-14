@@ -1,11 +1,14 @@
 import { Pool } from 'pg';
 import { createClient } from 'redis';
 import Docker from 'dockerode';
+import { Db, MongoClient } from 'mongodb';
 
 // Environment variables configuration
 export const PORT = process.env.PORT || 8000;
 export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/benchmarking';
 export const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+export const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017';
+export const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'benchmarking';
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS || 'localhost:9092';
 export const BENCHMARK_NET = process.env.BENCHMARK_NET || 'benchmarking-net';
 export const BOT_FLEET_URL = process.env.BOT_FLEET_URL || 'http://localhost:8081';
@@ -17,6 +20,9 @@ export const db = new Pool({
   connectionString: DATABASE_URL,
 });
 
+export const mongoClient = new MongoClient(MONGO_URL);
+export let mongoDb: Db;
+
 // Redis Client
 export const redis = createClient({
   url: REDIS_URL,
@@ -27,33 +33,25 @@ redis.on('error', (err) => console.error('Redis Client Error', err));
 // Docker Engine API client (reads default socket /var/run/docker.sock)
 export const docker = new Docker();
 
+async function initializeMongoSchema() {
+  console.log('🌱 Initializing MongoDB identity schema...');
+
+  await mongoDb.collection('users').createIndex({ username: 1 }, { unique: true });
+  await mongoDb.collection('users').createIndex({ teamName: 1 }, { unique: true });
+  await mongoDb.collection('users').createIndex({ teamId: 1 }, { unique: true });
+  await mongoDb.collection('teams').createIndex({ teamName: 1 }, { unique: true });
+
+  console.log('✅ MongoDB identity schema initialized successfully.');
+}
+
 // Initialize database tables programmatically if they do not exist
 async function initializeDatabaseSchema(client: any) {
-  console.log('🌱 Initializing PostgreSQL database schema programmatically...');
-  
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS contestants (
-        id SERIAL PRIMARY KEY,
-        team_name VARCHAR(100) UNIQUE NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(100) UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        team_name VARCHAR(100) UNIQUE NOT NULL,
-        contestant_id INTEGER UNIQUE REFERENCES contestants(id) ON DELETE CASCADE,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+  console.log('🌱 Initializing PostgreSQL benchmark schema programmatically...');
   
   await client.query(`
     CREATE TABLE IF NOT EXISTS submissions (
         id SERIAL PRIMARY KEY,
-        contestant_id INTEGER REFERENCES contestants(id) ON DELETE CASCADE,
+        team_name VARCHAR(100) NOT NULL,
         docker_image_tag VARCHAR(150) NOT NULL,
         status VARCHAR(50) DEFAULT 'pending',
         build_logs TEXT,
@@ -77,34 +75,52 @@ async function initializeDatabaseSchema(client: any) {
     );
   `);
 
-  // Seed default teams
+  await client.query(`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_submissions_team_name ON submissions(team_name);`);
   await client.query(`
-    INSERT INTO contestants (team_name) 
-    VALUES ('alpha_traders'), ('beta_quant') 
-    ON CONFLICT (team_name) DO NOTHING;
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'contestants'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'submissions' AND column_name = 'contestant_id'
+      ) THEN
+        UPDATE submissions s
+        SET team_name = c.team_name
+        FROM contestants c
+        WHERE s.team_name IS NULL AND s.contestant_id = c.id;
+      END IF;
+    END $$;
   `);
 
   // Check if submissions exist, if not insert default ones
   const subCount = await client.query('SELECT COUNT(*) FROM submissions');
   if (parseInt(subCount.rows[0].count, 10) === 0) {
     await client.query(`
-      INSERT INTO submissions (id, contestant_id, docker_image_tag, status) 
+      INSERT INTO submissions (id, team_name, docker_image_tag, status)
       VALUES 
-      (1, 1, 'mock-contestant:latest', 'built'),
-      (2, 2, 'mock-contestant:latest', 'built')
+      (1, 'alpha_traders', 'mock-contestant:latest', 'built'),
+      (2, 'beta_quant', 'mock-contestant:latest', 'built')
       ON CONFLICT DO NOTHING;
     `);
     // Reset serial sequence
     await client.query("SELECT setval('submissions_id_seq', (SELECT MAX(id) FROM submissions));");
   }
 
-  console.log('✅ PostgreSQL database schema initialized successfully.');
+  console.log('✅ PostgreSQL benchmark schema initialized successfully.');
 }
 
 // Initialize external connections
 export async function initConnections() {
   await redis.connect();
   console.log('✅ Connected to Redis successfully');
+
+  await mongoClient.connect();
+  mongoDb = mongoClient.db(MONGO_DB_NAME);
+  console.log('✅ Connected to MongoDB successfully');
+  await initializeMongoSchema();
 
   const client = await db.connect();
   try {

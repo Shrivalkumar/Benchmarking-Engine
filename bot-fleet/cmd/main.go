@@ -49,9 +49,9 @@ var httpClient = &http.Client{
 }
 
 var (
-	kafkaWriter  *kafka.Writer
-	activeMutex  sync.Mutex
-	activeCancel context.CancelFunc
+	kafkaWriter *kafka.Writer
+	activeMutex sync.Mutex
+	activeRuns  = make(map[string]context.CancelFunc)
 )
 
 func main() {
@@ -106,15 +106,15 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	activeMutex.Lock()
-	if activeCancel != nil {
-		// Stop any ongoing test first
-		activeCancel()
-		log.Println("Stopping previous active stress test before starting new one.")
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	activeCancel = cancel
+	activeMutex.Lock()
+	if _, exists := activeRuns[req.BenchmarkRunID]; exists {
+		activeMutex.Unlock()
+		cancel()
+		http.Error(w, "Benchmark run is already active", http.StatusConflict)
+		return
+	}
+	activeRuns[req.BenchmarkRunID] = cancel
 	activeMutex.Unlock()
 
 	// Spawn stress test runner in background
@@ -129,19 +129,72 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStop(w http.ResponseWriter, r *http.Request) {
+	runID := r.URL.Query().Get("benchmark_run_id")
+	if runID == "" && r.Body != nil {
+		var req struct {
+			BenchmarkRunID string `json:"benchmark_run_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			runID = req.BenchmarkRunID
+		}
+	}
+
+	if runID != "" {
+		if cancelRun(runID) {
+			log.Printf("[Run %s] Stress test stop triggered.", runID)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Stress test stopped"))
+			return
+		}
+		http.Error(w, "Benchmark run is not active", http.StatusNotFound)
+		return
+	}
+
+	stoppedCount := cancelAllRuns()
+	log.Printf("Manual stop triggered for %d active stress tests.", stoppedCount)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Stress tests stopped"))
+}
+
+func cancelRun(runID string) bool {
 	activeMutex.Lock()
-	if activeCancel != nil {
-		activeCancel()
-		activeCancel = nil
-		log.Println("Stress test manual stop triggered.")
+	cancel, exists := activeRuns[runID]
+	if exists {
+		delete(activeRuns, runID)
 	}
 	activeMutex.Unlock()
 
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Stress test stopped"))
+	if exists {
+		cancel()
+	}
+	return exists
+}
+
+func cancelAllRuns() int {
+	activeMutex.Lock()
+	cancels := make([]context.CancelFunc, 0, len(activeRuns))
+	for runID, cancel := range activeRuns {
+		delete(activeRuns, runID)
+		cancels = append(cancels, cancel)
+	}
+	activeMutex.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return len(cancels)
+}
+
+func unregisterRun(runID string) {
+	activeMutex.Lock()
+	delete(activeRuns, runID)
+	activeMutex.Unlock()
 }
 
 func runStressTest(ctx context.Context, req StartRequest) {
+	defer unregisterRun(req.BenchmarkRunID)
+
 	log.Printf("[Run %s] Starting stress test. Target: %s, TPS: %d, Concurrency: %d, Duration: %ds",
 		req.BenchmarkRunID, req.TargetURL, req.TPS, req.Concurrency, req.DurationSeconds)
 
@@ -243,12 +296,7 @@ func runStressTest(ctx context.Context, req StartRequest) {
 		log.Printf("[Run %s] Stress test aborted early.", req.BenchmarkRunID)
 	case <-time.After(time.Duration(req.DurationSeconds) * time.Second):
 		log.Printf("[Run %s] Stress test duration completed.", req.BenchmarkRunID)
-		activeMutex.Lock()
-		if activeCancel != nil {
-			activeCancel()
-			activeCancel = nil
-		}
-		activeMutex.Unlock()
+		cancelRun(req.BenchmarkRunID)
 	}
 
 	wg.Wait()

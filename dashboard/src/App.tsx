@@ -27,7 +27,7 @@ interface AuthUser {
   token: string;
   username: string;
   team_name: string;
-  contestant_id: number;
+  team_id: string;
 }
 
 interface Standing {
@@ -136,8 +136,8 @@ function isSavedAuthUser(value: unknown): value is AuthUser {
     candidate.username.length > 0 &&
     typeof candidate.team_name === 'string' &&
     candidate.team_name.length > 0 &&
-    typeof candidate.contestant_id === 'number' &&
-    Number.isFinite(candidate.contestant_id)
+    typeof candidate.team_id === 'string' &&
+    candidate.team_id.length > 0
   );
 }
 
@@ -306,7 +306,7 @@ export default function App() {
     setBuildLogs('');
 
     try {
-      // Submit code directly using user's contestant_id
+      // Submit code directly using the authenticated user's team_id
       const subRes = await fetch(`${ORCHESTRATOR_API}/submissions`, {
         method: 'POST',
         headers: {
@@ -314,7 +314,7 @@ export default function App() {
           'Authorization': `Bearer ${user.token}`
         },
         body: JSON.stringify({
-          contestant_id: user.contestant_id,
+          team_id: user.team_id,
           source_code: sourceCode,
           language: language,
         }),
@@ -322,7 +322,7 @@ export default function App() {
 
       if (!subRes.ok) {
         const errorData = await subRes.json().catch(() => ({ error: 'Unknown server error' }));
-        if (subRes.status === 404 && errorData.error === 'Contestant not found') {
+        if (subRes.status === 404 && errorData.error === 'Team not found') {
           handleLogout();
           alert('Your team session has expired or the database was reset. Please sign up or log in again.');
           return;
@@ -403,7 +403,7 @@ export default function App() {
         token: data.token,
         username: data.username,
         team_name: data.team_name,
-        contestant_id: data.contestant_id,
+        team_id: data.team_id,
       };
 
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(userSession));

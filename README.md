@@ -80,31 +80,36 @@ flowchart TD
 
 ## 3. Data Storage & Schema Design
 
-### 3.1 PostgreSQL (Relational Storage)
-Used for structured, persistent metadata like users, contestant registration, submission status, and historical benchmark logs.
+### 3.1 MongoDB (Identity Storage)
+Used for persistent user credentials and team registration data.
+
+```js
+// teams collection
+{
+  teamName: "alpha_traders",
+  createdAt: ISODate(...)
+}
+
+// users collection
+{
+  username: "alice",
+  passwordHash: "...bcrypt hash...",
+  teamName: "alpha_traders",
+  teamId: "...Mongo ObjectId string...",
+  createdAt: ISODate(...)
+}
+```
+
+Unique indexes are maintained on `users.username`, `users.teamName`, `users.teamId`, and `teams.teamName`.
+
+### 3.2 PostgreSQL (Benchmark Storage)
+Used for submission status and historical benchmark logs. User and team identity data is not stored here.
 
 ```sql
--- Contestants table
-CREATE TABLE IF NOT EXISTS contestants (
-    id SERIAL PRIMARY KEY,
-    team_name VARCHAR(100) UNIQUE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- Users table
-CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    username VARCHAR(100) UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    team_name VARCHAR(100) UNIQUE NOT NULL,
-    contestant_id INTEGER UNIQUE REFERENCES contestants(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Submissions table
 CREATE TABLE IF NOT EXISTS submissions (
     id SERIAL PRIMARY KEY,
-    contestant_id INTEGER REFERENCES contestants(id) ON DELETE CASCADE,
+    team_name VARCHAR(100) NOT NULL,
     docker_image_tag VARCHAR(150) NOT NULL,
     status VARCHAR(50) DEFAULT 'pending', -- pending, building, built, failed
     build_logs TEXT,
@@ -127,12 +132,14 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
 );
 ```
 
-### 3.2 Redis (In-Memory Leaderboard)
+### 3.3 Redis (In-Memory Leaderboard)
 - **Key:** `leaderboard` (Sorted Set `ZSET`)
   - **Member:** `team_name`
   - **Score:** Best completed run score calculated as $\text{TPS} \times \text{success rate} / (P_{90}\text{ Latency (ms)} + 1)$. Using standard ZSET operations allows $O(\log N)$ inserts and instant retrieval of top rankings.
-- **Key:** `run:active` (Hash)
-  - Stores currently active run details (`run_id`, `team_name`, `container_id`, `started_at`, `expires_at`).
+- **Key:** `runs:active` (Set)
+  - Tracks active benchmark run IDs.
+- **Key pattern:** `run:active:{run_id}` (Hash)
+  - Stores per-run details (`run_id`, `team_name`, `container_id`, `started_at`, `expires_at`) so concurrent benchmarks do not overwrite each other.
 
 ---
 

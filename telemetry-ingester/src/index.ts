@@ -10,6 +10,11 @@ const PORT = process.env.PORT || 8001;
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/benchmarking';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const KAFKA_BROKERS = process.env.KAFKA_BROKERS || 'localhost:9092';
+const ACTIVE_RUNS_SET_KEY = 'runs:active';
+
+function activeRunKey(runId: string) {
+  return `run:active:${runId}`;
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -177,17 +182,21 @@ setInterval(async () => {
  * If a run has not received any order metric for 5 seconds, remove it from active memory.
  */
 setInterval(() => {
-  const now = Date.now();
-  // We can track last update time on stats if needed, or simply clean up runs
-  // that are no longer marked as "active" in Redis.
-  redis.hGetAll('run:active').then((activeRun) => {
-    for (const runId of runStatsMap.keys()) {
-      if (!activeRun || activeRun.run_id !== runId) {
+  const trackedRunIds = Array.from(runStatsMap.keys());
+  Promise.all(
+    trackedRunIds.map(async (runId) => ({
+      runId,
+      isActive: await redis.exists(activeRunKey(runId)),
+    }))
+  ).then((activeChecks) => {
+    for (const { runId, isActive } of activeChecks) {
+      if (!isActive) {
         console.log(`[Telemetry] Finalizing and cleaning memory tracker for run ${runId}`);
         runStatsMap.delete(runId);
+        redis.sRem(ACTIVE_RUNS_SET_KEY, runId).catch(() => {});
       }
     }
-  }).catch(err => console.error('Error auto-cleaning run:active stats:', err));
+  }).catch(err => console.error('Error auto-cleaning active run stats:', err));
 }, 5000);
 
 /**
@@ -219,14 +228,13 @@ async function startKafkaConsumer() {
         if (!stats) {
           // If not in memory, fetch team name from Redis active run or PG
           let teamName = 'unknown_team';
-          const activeRun = await redis.hGetAll('run:active');
-          if (activeRun && activeRun.run_id === benchmark_run_id) {
+          const activeRun = await redis.hGetAll(activeRunKey(benchmark_run_id));
+          if (activeRun && activeRun.team_name) {
             teamName = activeRun.team_name;
           } else {
             const dbRun = await db.query(
-              `SELECT c.team_name FROM benchmark_runs br 
+              `SELECT s.team_name FROM benchmark_runs br
                JOIN submissions s ON br.submission_id = s.id 
-               JOIN contestants c ON s.contestant_id = c.id 
                WHERE br.id = $1`,
               [benchmark_run_id]
             );

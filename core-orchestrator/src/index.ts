@@ -1,10 +1,11 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
-import { initConnections, db, redis, BOT_FLEET_URL, INTERNAL_API_TOKEN, JWT_SECRET, PORT } from './config';
+import { initConnections, db, mongoDb, redis, BOT_FLEET_URL, INTERNAL_API_TOKEN, JWT_SECRET, PORT } from './config';
 import { SandboxService } from './services/sandbox';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { ObjectId } from 'mongodb';
 
 const app = express();
 app.use(cors());
@@ -15,16 +16,36 @@ const MAX_TPS = 5000;
 const MAX_CONCURRENCY = 500;
 const MAX_DURATION_SECONDS = 300;
 const MIN_PASSWORD_LENGTH = 8;
+const ACTIVE_RUNS_SET_KEY = 'runs:active';
+
+function activeRunKey(runId: string) {
+  return `run:active:${runId}`;
+}
 
 interface AuthPayload {
-  userId: number;
+  userId: string;
   username: string;
-  contestantId: number;
+  teamId: string;
   teamName: string;
 }
 
 interface AuthedRequest extends Request {
   user?: AuthPayload;
+}
+
+interface UserDoc {
+  _id?: ObjectId;
+  username: string;
+  passwordHash: string;
+  teamName: string;
+  teamId: string;
+  createdAt: Date;
+}
+
+interface TeamDoc {
+  _id?: ObjectId;
+  teamName: string;
+  createdAt: Date;
 }
 
 function normalizeHandle(value: string) {
@@ -65,7 +86,16 @@ function authenticateToken(req: AuthedRequest, res: Response, next: express.Next
   }
 
   try {
-    req.user = jwt.verify(token, JWT_SECRET) as AuthPayload;
+    const payload = jwt.verify(token, JWT_SECRET) as Partial<AuthPayload>;
+    if (
+      typeof payload.userId !== 'string' ||
+      typeof payload.username !== 'string' ||
+      typeof payload.teamId !== 'string' ||
+      typeof payload.teamName !== 'string'
+    ) {
+      return res.status(401).json({ error: 'Invalid or expired authentication token' });
+    }
+    req.user = payload as AuthPayload;
     return next();
   } catch {
     return res.status(401).json({ error: 'Invalid or expired authentication token' });
@@ -101,7 +131,7 @@ async function waitForContestantHealth(targetUrl: string, timeoutMs = 15000) {
 }
 
 /**
- * Auth: User Signup (register team and credentials in PostgreSQL)
+ * Auth: User Signup (register team and credentials in MongoDB)
  */
 app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
   const { username, password, team_name } = req.body;
@@ -117,64 +147,51 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
   const cleanUsername = parsedUsername.value!;
   const cleanPassword = parsedPassword.value!;
   const cleanTeamName = parsedTeamName.value!;
-  let createdTeamName: string | null = null;
+  const users = mongoDb.collection<UserDoc>('users');
+  const teams = mongoDb.collection<TeamDoc>('teams');
 
-  const client = await db.connect();
   try {
-    await client.query('BEGIN');
-
-    // 1. Check if user or team already has credentials
-    const existingUser = await client.query(
-      'SELECT username, team_name FROM users WHERE username = $1 OR team_name = $2',
-      [cleanUsername, cleanTeamName]
-    );
-    if (existingUser.rows.length > 0) {
-      await client.query('ROLLBACK');
-      const conflict = existingUser.rows.find((row) => row.username === cleanUsername)
+    const existingUser = await users.findOne({
+      $or: [{ username: cleanUsername }, { teamName: cleanTeamName }],
+    });
+    if (existingUser) {
+      const conflict = existingUser.username === cleanUsername
         ? 'Username is already taken'
         : 'Team name is already taken';
       return res.status(409).json({ error: conflict });
     }
 
-    // 2. Create contestant in PostgreSQL
-    const pgResult = await client.query(
-      'INSERT INTO contestants (team_name) VALUES ($1) ON CONFLICT (team_name) DO NOTHING RETURNING *',
-      [cleanTeamName]
-    );
-
-    let contestantId: number;
-    if (pgResult.rows.length === 0) {
-      const existing = await client.query('SELECT id FROM contestants WHERE team_name = $1', [cleanTeamName]);
-      contestantId = existing.rows[0].id;
-    } else {
-      contestantId = pgResult.rows[0].id;
-      createdTeamName = cleanTeamName;
+    const existingTeam = await teams.findOne({ teamName: cleanTeamName });
+    if (existingTeam) {
+      return res.status(409).json({ error: 'Team name is already taken' });
     }
 
-    // 3. Hash password
     const passwordHash = await bcrypt.hash(cleanPassword, 10);
+    const now = new Date();
+    const teamResult = await teams.insertOne({ teamName: cleanTeamName, createdAt: now });
+    const teamId = teamResult.insertedId.toString();
 
-    // 4. Create user in PostgreSQL
-    const userResult = await client.query(
-      `INSERT INTO users (username, password_hash, team_name, contestant_id)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, username, team_name, contestant_id`,
-      [cleanUsername, passwordHash, cleanTeamName, contestantId]
-    );
-    const newUser = userResult.rows[0];
-
-    await client.query('COMMIT');
-
-    if (createdTeamName) {
-      // Leaderboard setup should not invalidate a committed auth account.
-      redis.zAdd('leaderboard', { score: 0, value: createdTeamName }).catch((err) => {
-        console.error(`Failed to initialize leaderboard for ${createdTeamName}:`, err);
+    let userResult;
+    try {
+      userResult = await users.insertOne({
+        username: cleanUsername,
+        passwordHash,
+        teamName: cleanTeamName,
+        teamId,
+        createdAt: now,
       });
+    } catch (error) {
+      await teams.deleteOne({ _id: teamResult.insertedId }).catch(() => {});
+      throw error;
     }
 
-    // 5. Generate JWT token
+    // Leaderboard setup should not invalidate a committed auth account.
+    redis.zAdd('leaderboard', { score: 0, value: cleanTeamName }).catch((err) => {
+      console.error(`Failed to initialize leaderboard for ${cleanTeamName}:`, err);
+    });
+
     const token = jwt.sign(
-      { userId: newUser.id, username: newUser.username, contestantId, teamName: cleanTeamName },
+      { userId: userResult.insertedId.toString(), username: cleanUsername, teamId, teamName: cleanTeamName },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -182,21 +199,18 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
     return res.status(201).json({
       message: 'Signup successful',
       token,
-      username: newUser.username,
+      username: cleanUsername,
       team_name: cleanTeamName,
-      contestant_id: contestantId
+      team_id: teamId
     });
   } catch (error: any) {
-    await client.query('ROLLBACK').catch(() => {});
     console.error('Signup error:', error);
-    if (error.code === '23505') {
-      const constraint = String(error.constraint || '');
-      const field = constraint.includes('team_name') || constraint.includes('contestant_id') ? 'Team name' : 'Username';
+    if (error.code === 11000) {
+      const keyPattern = error.keyPattern || {};
+      const field = keyPattern.teamName || keyPattern.teamId ? 'Team name' : 'Username';
       return res.status(409).json({ error: `${field} is already taken` });
     }
     return res.status(500).json({ error: error.message });
-  } finally {
-    client.release();
   }
 });
 
@@ -213,25 +227,18 @@ app.post('/auth/login', async (req: Request, res: Response): Promise<any> => {
   }
 
   try {
-    // 1. Find user in PostgreSQL
-    const userResult = await db.query(
-      'SELECT id, username, password_hash, team_name, contestant_id FROM users WHERE username = $1',
-      [parsedUsername.value]
-    );
-    if (userResult.rows.length === 0) {
+    const user = await mongoDb.collection<UserDoc>('users').findOne({ username: parsedUsername.value });
+    if (!user || !user._id) {
       return res.status(400).json({ error: 'Invalid username or password' });
     }
-    const user = userResult.rows[0];
 
-    // 2. Compare password hash
-    const isValid = await bcrypt.compare(password, user.password_hash);
+    const isValid = await bcrypt.compare(password, user.passwordHash);
     if (!isValid) {
       return res.status(400).json({ error: 'Invalid username or password' });
     }
 
-    // 3. Generate JWT token
     const token = jwt.sign(
-      { userId: user.id, username: user.username, contestantId: user.contestant_id, teamName: user.team_name },
+      { userId: user._id.toString(), username: user.username, teamId: user.teamId, teamName: user.teamName },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -240,8 +247,8 @@ app.post('/auth/login', async (req: Request, res: Response): Promise<any> => {
       message: 'Login successful',
       token,
       username: user.username,
-      team_name: user.team_name,
-      contestant_id: user.contestant_id
+      team_name: user.teamName,
+      team_id: user.teamId
     });
   } catch (error: any) {
     console.error('Login error:', error);
@@ -256,29 +263,37 @@ const activeContainers = new Map<string, string>();
  * 1. Register a Contestant Team
  */
 app.post('/contestants', async (req: Request, res: Response): Promise<any> => {
-  const { team_name } = req.body;
-  if (!team_name) {
-    return res.status(400).json({ error: 'team_name is required' });
+  const parsedTeamName = parseHandle(req.body.team_name, 'team_name');
+  if (parsedTeamName.error) {
+    return res.status(400).json({ error: parsedTeamName.error });
   }
 
+  const teamName = parsedTeamName.value!;
   try {
-    const result = await db.query(
-      'INSERT INTO contestants (team_name) VALUES ($1) ON CONFLICT (team_name) DO NOTHING RETURNING *',
-      [team_name]
-    );
-    
-    // If team existed, fetch it
-    if (result.rows.length === 0) {
-      const existing = await db.query('SELECT * FROM contestants WHERE team_name = $1', [team_name]);
-      return res.status(200).json(existing.rows[0]);
+    const teams = mongoDb.collection<TeamDoc>('teams');
+    const existing = await teams.findOne({ teamName });
+    if (existing?._id) {
+      return res.status(200).json({
+        id: existing._id.toString(),
+        team_id: existing._id.toString(),
+        team_name: existing.teamName,
+        created_at: existing.createdAt,
+      });
     }
 
-    // Initialize in Redis leaderboard with a starting score of 0
-    await redis.zAdd('leaderboard', { score: 0, value: team_name });
+    const result = await teams.insertOne({ teamName, createdAt: new Date() });
+    await redis.zAdd('leaderboard', { score: 0, value: teamName });
 
-    return res.status(201).json(result.rows[0]);
+    return res.status(201).json({
+      id: result.insertedId.toString(),
+      team_id: result.insertedId.toString(),
+      team_name: teamName,
+    });
   } catch (error: any) {
     console.error(error);
+    if (error.code === 11000) {
+      return res.status(409).json({ error: 'Team name is already taken' });
+    }
     return res.status(500).json({ error: error.message });
   }
 });
@@ -287,7 +302,7 @@ app.post('/contestants', async (req: Request, res: Response): Promise<any> => {
  * 2. Submit Source Code for Compilation & Sandboxing
  */
 app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Response): Promise<any> => {
-  const { contestant_id, source_code, language = 'go' } = req.body;
+  const { team_id, contestant_id, source_code, language = 'go' } = req.body;
 
   if (!source_code) {
     return res.status(400).json({ error: 'source_code is required' });
@@ -297,7 +312,8 @@ app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Resp
     return res.status(413).json({ error: 'source_code exceeds the 1MB limit' });
   }
 
-  if (contestant_id && Number(contestant_id) !== req.user!.contestantId) {
+  const requestedTeamId = team_id || contestant_id;
+  if (requestedTeamId && String(requestedTeamId) !== req.user!.teamId) {
     return res.status(403).json({ error: 'You can only submit code for your own team' });
   }
 
@@ -306,18 +322,21 @@ app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Resp
   }
 
   try {
-    // 1. Verify contestant exists
-    const contestant = await db.query('SELECT * FROM contestants WHERE id = $1', [req.user!.contestantId]);
-    if (contestant.rows.length === 0) {
-      return res.status(404).json({ error: 'Contestant not found' });
+    if (!ObjectId.isValid(req.user!.userId)) {
+      return res.status(401).json({ error: 'Invalid or expired authentication token' });
+    }
+
+    const user = await mongoDb.collection<UserDoc>('users').findOne({ _id: new ObjectId(req.user!.userId) });
+    if (!user || user.teamId !== req.user!.teamId || user.teamName !== req.user!.teamName) {
+      return res.status(404).json({ error: 'Team not found' });
     }
 
     const imageTag = `contestant-sub-${uuidv4()}:latest`;
     
     // 2. Insert submission metadata in PG (status: building)
     const subResult = await db.query(
-      'INSERT INTO submissions (contestant_id, docker_image_tag, status) VALUES ($1, $2, $3) RETURNING *',
-      [req.user!.contestantId, imageTag, 'building']
+      'INSERT INTO submissions (team_name, docker_image_tag, status) VALUES ($1, $2, $3) RETURNING *',
+      [req.user!.teamName, imageTag, 'building']
     );
     const submission = subResult.rows[0];
 
@@ -352,7 +371,7 @@ app.get('/submissions/:id', authenticateToken, async (req: AuthedRequest, res: R
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Submission not found' });
     }
-    if (result.rows[0].contestant_id !== req.user!.contestantId) {
+    if (result.rows[0].team_name !== req.user!.teamName) {
       return res.status(403).json({ error: 'You can only view your own submissions' });
     }
     return res.json(result.rows[0]);
@@ -392,18 +411,10 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
   }
 
   try {
-    // Check if there is already an active run in Redis to prevent concurrency collisions
-    const activeRun = await redis.hGetAll('run:active');
-    if (activeRun && activeRun.run_id) {
-      return res.status(409).json({ error: 'Another benchmark test is already running. Please wait.' });
-    }
-
-    // Get submission and contestant info
+    // Get submission info owned by the authenticated team
     const subResult = await db.query(
-      `SELECT s.*, c.team_name FROM submissions s 
-       JOIN contestants c ON s.contestant_id = c.id 
-       WHERE s.id = $1 AND s.contestant_id = $2`,
-      [submission_id, req.user!.contestantId]
+      `SELECT * FROM submissions WHERE id = $1 AND team_name = $2`,
+      [submission_id, req.user!.teamName]
     );
 
     if (subResult.rows.length === 0) {
@@ -425,15 +436,16 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
 
     await waitForContestantHealth(`http://${targetHostname}:8080`);
 
-    // 2. Set active run cache in Redis
-    await redis.hSet('run:active', {
+    // 2. Track this run independently so concurrent benchmarks do not collide.
+    await redis.hSet(activeRunKey(runId), {
       run_id: runId,
       team_name: submission.team_name,
       container_id: containerId,
       started_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + (requestedDuration + 30) * 1000).toISOString(),
     });
-    await redis.expire('run:active', requestedDuration + 30);
+    await redis.expire(activeRunKey(runId), requestedDuration + 30);
+    await redis.sAdd(ACTIVE_RUNS_SET_KEY, runId);
 
     // 3. Create run entry in PostgreSQL
     await db.query(
@@ -526,8 +538,7 @@ app.get('/leaderboard', async (req: Request, res: Response): Promise<any> => {
              success_rate
            FROM benchmark_runs br
            JOIN submissions s ON br.submission_id = s.id
-           JOIN contestants c ON s.contestant_id = c.id
-           WHERE c.team_name = $1 AND br.status = 'completed' AND br.p50_latency_ms > 0
+           WHERE s.team_name = $1 AND br.status = 'completed' AND br.p50_latency_ms > 0
            ORDER BY ((br.avg_tps * (br.success_rate / 100.0)) / (br.p90_latency_ms + 1.0)) DESC
            LIMIT 1`,
           [teamName]
@@ -560,8 +571,8 @@ async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'co
   let containerId: string | undefined = activeContainers.get(runId);
   if (!containerId) {
     try {
-      const active = await redis.hGetAll('run:active');
-      if (active && active.run_id === runId && active.container_id) {
+      const active = await redis.hGetAll(activeRunKey(runId));
+      if (active && active.container_id) {
         containerId = active.container_id;
       }
     } catch (err) {
@@ -572,14 +583,10 @@ async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'co
     containerId = await SandboxService.findContainerIdByRun(runId) || undefined;
   }
   if (!containerId) {
-    await redis.hGetAll('run:active')
-      .then((active) => {
-        if (active?.run_id === runId) {
-          return redis.del('run:active');
-        }
-        return undefined;
-      })
-      .catch(() => {});
+    await Promise.all([
+      redis.del(activeRunKey(runId)),
+      redis.sRem(ACTIVE_RUNS_SET_KEY, runId),
+    ]).catch(() => {});
     await db.query(
       `UPDATE benchmark_runs
        SET status = CASE WHEN status = 'running' THEN $2::varchar ELSE status END,
@@ -604,10 +611,8 @@ async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'co
 
   // 3. Clear active run flag in Redis
   try {
-    const active = await redis.hGetAll('run:active');
-    if (active && active.run_id === runId) {
-      await redis.del('run:active');
-    }
+    await redis.del(activeRunKey(runId));
+    await redis.sRem(ACTIVE_RUNS_SET_KEY, runId);
   } catch (err) {
     console.error('Failed to clear active run from Redis:', err);
   }
