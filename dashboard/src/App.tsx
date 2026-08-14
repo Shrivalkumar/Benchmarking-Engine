@@ -57,21 +57,67 @@ interface ChartDataPoint {
   p99: number;
 }
 
+const AUTH_STORAGE_KEY = 'auth_user';
+
+function normalizeHandleInput(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9_]/g, '');
+}
+
+function isSavedAuthUser(value: unknown): value is AuthUser {
+  if (!value || typeof value !== 'object') return false;
+
+  const candidate = value as Partial<AuthUser>;
+  return (
+    typeof candidate.token === 'string' &&
+    candidate.token.length > 0 &&
+    typeof candidate.username === 'string' &&
+    candidate.username.length > 0 &&
+    typeof candidate.team_name === 'string' &&
+    candidate.team_name.length > 0 &&
+    typeof candidate.contestant_id === 'number' &&
+    Number.isFinite(candidate.contestant_id)
+  );
+}
+
+function loadSavedAuthUser() {
+  const saved = localStorage.getItem(AUTH_STORAGE_KEY);
+  if (!saved) return null;
+
+  try {
+    const parsed = JSON.parse(saved);
+    if (isSavedAuthUser(parsed)) return parsed;
+  } catch {
+    // Fall through to clear invalid session data.
+  }
+
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  return null;
+}
+
+async function readJsonResponse(res: Response) {
+  const text = await res.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text };
+  }
+}
+
 export default function App() {
   // Navigation & Connection configurations
   const ORCHESTRATOR_API = import.meta.env.VITE_ORCHESTRATOR_API || 'http://localhost:8010';
   const TELEMETRY_WS = import.meta.env.VITE_TELEMETRY_WS || 'ws://localhost:8001';
 
   // Auth Session States
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    const saved = localStorage.getItem('auth_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [user, setUser] = useState<AuthUser | null>(() => loadSavedAuthUser());
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authTeamName, setAuthTeamName] = useState('');
   const [authError, setAuthError] = useState('');
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [activeTab, setActiveTab] = useState<'submission' | 'leaderboard'>('submission');
 
   // API state
@@ -207,23 +253,32 @@ export default function App() {
   // Handle Authentication submit
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAuthenticating) return;
+
     setAuthError('');
 
     const endpoint = authMode === 'login' ? '/auth/login' : '/auth/signup';
+    const normalizedUsername = normalizeHandleInput(authUsername);
+    const normalizedTeamName = normalizeHandleInput(authTeamName);
     const payload = authMode === 'login' 
-      ? { username: authUsername, password: authPassword }
-      : { username: authUsername, password: authPassword, team_name: authTeamName };
+      ? { username: normalizedUsername, password: authPassword }
+      : { username: normalizedUsername, password: authPassword, team_name: normalizedTeamName };
 
     try {
+      setIsAuthenticating(true);
       const res = await fetch(`${ORCHESTRATOR_API}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      const data = await readJsonResponse(res);
       if (!res.ok) {
         throw new Error(data.error || 'Authentication failed');
+      }
+
+      if (!isSavedAuthUser(data)) {
+        throw new Error('Authentication response was missing session data');
       }
 
       const userSession: AuthUser = {
@@ -233,16 +288,18 @@ export default function App() {
         contestant_id: data.contestant_id,
       };
 
-      localStorage.setItem('auth_user', JSON.stringify(userSession));
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(userSession));
       setUser(userSession);
     } catch (err: any) {
-      setAuthError(err.message);
+      setAuthError(err.message || 'Authentication failed');
+    } finally {
+      setIsAuthenticating(false);
     }
   };
 
   // Handle Logout
   const handleLogout = () => {
-    localStorage.removeItem('auth_user');
+    localStorage.removeItem(AUTH_STORAGE_KEY);
     setUser(null);
     setSubmissionId(null);
     setBuildLogs('');
@@ -376,7 +433,7 @@ export default function App() {
               <input 
                 type="text" 
                 value={authUsername}
-                onChange={(e) => setAuthUsername(e.target.value)}
+                onChange={(e) => setAuthUsername(normalizeHandleInput(e.target.value))}
                 placeholder="e.g. tourist"
                 required
                 className="w-full bg-white border border-[#ccc] rounded px-3 py-1.5 text-sm text-[#333] focus:outline-none focus:border-[#3b5998]"
@@ -401,7 +458,7 @@ export default function App() {
                 <input 
                   type="text" 
                   value={authTeamName}
-                  onChange={(e) => setAuthTeamName(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                  onChange={(e) => setAuthTeamName(normalizeHandleInput(e.target.value))}
                   placeholder="e.g. red_pandas"
                   required
                   className="w-full bg-white border border-[#ccc] rounded px-3 py-1.5 text-sm text-[#333] focus:outline-none focus:border-[#3b5998]"
@@ -411,9 +468,10 @@ export default function App() {
 
             <button
               type="submit"
+              disabled={isAuthenticating}
               className="w-full py-2 mt-2 font-bold text-sm bg-[#3b5998] hover:bg-[#2d4373] text-white rounded transition shadow-sm"
             >
-              {authMode === 'login' ? 'Enter' : 'Register & Create Team'}
+              {isAuthenticating ? 'Please wait...' : authMode === 'login' ? 'Enter' : 'Register & Create Team'}
             </button>
           </form>
 

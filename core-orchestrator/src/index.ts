@@ -27,7 +27,28 @@ interface AuthedRequest extends Request {
 }
 
 function normalizeHandle(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  return value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+}
+
+function parseHandle(value: unknown, fieldName: string): { value?: string; error?: string } {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return { error: `${fieldName} is required` };
+  }
+
+  const normalized = normalizeHandle(value);
+  if (!normalized) {
+    return { error: `${fieldName} contains invalid characters. Use letters, numbers, and underscores.` };
+  }
+
+  return { value: normalized };
+}
+
+function parsePassword(value: unknown): { value?: string; error?: string } {
+  if (typeof value !== 'string' || value.length === 0) {
+    return { error: 'password is required' };
+  }
+
+  return { value };
 }
 
 function authenticateToken(req: AuthedRequest, res: Response, next: express.NextFunction): any {
@@ -80,18 +101,18 @@ async function waitForContestantHealth(targetUrl: string, timeoutMs = 15000) {
 app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
   const { username, password, team_name } = req.body;
 
-  if (!username || !password || !team_name) {
-    return res.status(400).json({ error: 'username, password, and team_name are required' });
+  const parsedUsername = parseHandle(username, 'username');
+  const parsedPassword = parsePassword(password);
+  const parsedTeamName = parseHandle(team_name, 'team_name');
+  const validationErrors = [parsedUsername.error, parsedPassword.error, parsedTeamName.error].filter(Boolean);
+  if (validationErrors.length > 0) {
+    return res.status(400).json({ error: validationErrors.join(', ') });
   }
 
-  const cleanUsername = normalizeHandle(username);
-  const cleanTeamName = normalizeHandle(team_name);
-  if (!cleanUsername) {
-    return res.status(400).json({ error: 'username contains invalid characters. Use letters, numbers, and underscores.' });
-  }
-  if (!cleanTeamName) {
-    return res.status(400).json({ error: 'team_name contains invalid characters. Use letters, numbers, and underscores.' });
-  }
+  const cleanUsername = parsedUsername.value!;
+  const cleanPassword = parsedPassword.value!;
+  const cleanTeamName = parsedTeamName.value!;
+  let createdTeamName: string | null = null;
 
   const client = await db.connect();
   try {
@@ -99,12 +120,15 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
 
     // 1. Check if user or team already has credentials
     const existingUser = await client.query(
-      'SELECT id FROM users WHERE username = $1 OR team_name = $2',
+      'SELECT username, team_name FROM users WHERE username = $1 OR team_name = $2',
       [cleanUsername, cleanTeamName]
     );
     if (existingUser.rows.length > 0) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Username is already taken' });
+      const conflict = existingUser.rows.find((row) => row.username === cleanUsername)
+        ? 'Username is already taken'
+        : 'Team name is already taken';
+      return res.status(409).json({ error: conflict });
     }
 
     // 2. Create contestant in PostgreSQL
@@ -119,12 +143,11 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
       contestantId = existing.rows[0].id;
     } else {
       contestantId = pgResult.rows[0].id;
-      // Initialize in Redis leaderboard with a starting score of 0
-      await redis.zAdd('leaderboard', { score: 0, value: cleanTeamName });
+      createdTeamName = cleanTeamName;
     }
 
     // 3. Hash password
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(cleanPassword, 10);
 
     // 4. Create user in PostgreSQL
     const userResult = await client.query(
@@ -136,6 +159,13 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
     const newUser = userResult.rows[0];
 
     await client.query('COMMIT');
+
+    if (createdTeamName) {
+      // Leaderboard setup should not invalidate a committed auth account.
+      redis.zAdd('leaderboard', { score: 0, value: createdTeamName }).catch((err) => {
+        console.error(`Failed to initialize leaderboard for ${createdTeamName}:`, err);
+      });
+    }
 
     // 5. Generate JWT token
     const token = jwt.sign(
@@ -154,6 +184,11 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
   } catch (error: any) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('Signup error:', error);
+    if (error.code === '23505') {
+      const constraint = String(error.constraint || '');
+      const field = constraint.includes('team_name') || constraint.includes('contestant_id') ? 'Team name' : 'Username';
+      return res.status(409).json({ error: `${field} is already taken` });
+    }
     return res.status(500).json({ error: error.message });
   } finally {
     client.release();
@@ -166,7 +201,9 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
 app.post('/auth/login', async (req: Request, res: Response): Promise<any> => {
   const { username, password } = req.body;
 
-  if (!username || !password) {
+  const parsedUsername = parseHandle(username, 'username');
+  const parsedPassword = parsePassword(password);
+  if (parsedUsername.error || parsedPassword.error) {
     return res.status(400).json({ error: 'username and password are required' });
   }
 
@@ -174,7 +211,7 @@ app.post('/auth/login', async (req: Request, res: Response): Promise<any> => {
     // 1. Find user in PostgreSQL
     const userResult = await db.query(
       'SELECT id, username, password_hash, team_name, contestant_id FROM users WHERE username = $1',
-      [normalizeHandle(username)]
+      [parsedUsername.value]
     );
     if (userResult.rows.length === 0) {
       return res.status(400).json({ error: 'Invalid username or password' });
