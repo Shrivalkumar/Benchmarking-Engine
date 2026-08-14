@@ -61,7 +61,11 @@ interface ChartDataPoint {
   p99: number;
 }
 
+type AuthMode = 'login' | 'signup';
+
 const AUTH_STORAGE_KEY = 'auth_user';
+const AUTH_MODE_STORAGE_KEY = 'auth_mode';
+const MIN_PASSWORD_LENGTH = 8;
 
 const codeEditorTheme = EditorView.theme({
   '&': {
@@ -102,6 +106,23 @@ function getSourcePlaceholder(language: 'go' | 'cpp') {
 
 function normalizeHandleInput(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9_]/g, '');
+}
+
+function isAuthMode(value: unknown): value is AuthMode {
+  return value === 'login' || value === 'signup';
+}
+
+function getAuthModeFromHash() {
+  const mode = window.location.hash.replace('#', '');
+  return isAuthMode(mode) ? mode : null;
+}
+
+function loadSavedAuthMode(): AuthMode {
+  const hashMode = getAuthModeFromHash();
+  if (hashMode) return hashMode;
+
+  const savedMode = localStorage.getItem(AUTH_MODE_STORAGE_KEY);
+  return isAuthMode(savedMode) ? savedMode : 'login';
 }
 
 function isSavedAuthUser(value: unknown): value is AuthUser {
@@ -153,9 +174,10 @@ export default function App() {
 
   // Auth Session States
   const [user, setUser] = useState<AuthUser | null>(() => loadSavedAuthUser());
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authMode, setAuthMode] = useState<AuthMode>(() => loadSavedAuthMode());
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
   const [authTeamName, setAuthTeamName] = useState('');
   const [authError, setAuthError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -198,6 +220,29 @@ export default function App() {
     const interval = setInterval(fetchStandings, 4000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const nextMode = getAuthModeFromHash();
+      if (nextMode) {
+        setAuthMode(nextMode);
+        setAuthError('');
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (user) return;
+
+    localStorage.setItem(AUTH_MODE_STORAGE_KEY, authMode);
+    const nextHash = `#${authMode}`;
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${nextHash}`);
+    }
+  }, [authMode, user]);
 
   const fetchStandings = async () => {
     try {
@@ -305,6 +350,34 @@ export default function App() {
     const endpoint = authMode === 'login' ? '/auth/login' : '/auth/signup';
     const normalizedUsername = normalizeHandleInput(authUsername);
     const normalizedTeamName = normalizeHandleInput(authTeamName);
+
+    if (!normalizedUsername) {
+      setAuthError('Username is required');
+      return;
+    }
+
+    if (!authPassword) {
+      setAuthError('Password is required');
+      return;
+    }
+
+    if (authMode === 'signup') {
+      if (!normalizedTeamName) {
+        setAuthError('Team name is required');
+        return;
+      }
+
+      if (authPassword.length < MIN_PASSWORD_LENGTH) {
+        setAuthError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+        return;
+      }
+
+      if (authPassword !== authConfirmPassword) {
+        setAuthError('Password and confirm password must match');
+        return;
+      }
+    }
+
     const payload = authMode === 'login' 
       ? { username: normalizedUsername, password: authPassword }
       : { username: normalizedUsername, password: authPassword, team_name: normalizedTeamName };
@@ -335,6 +408,8 @@ export default function App() {
 
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(userSession));
       setUser(userSession);
+      setAuthPassword('');
+      setAuthConfirmPassword('');
     } catch (err: any) {
       setAuthError(err.message || 'Authentication failed');
     } finally {
@@ -493,22 +568,40 @@ export default function App() {
                 onChange={(e) => setAuthPassword(e.target.value)}
                 placeholder="••••••••"
                 required
+                minLength={authMode === 'signup' ? MIN_PASSWORD_LENGTH : undefined}
+                autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
                 className="w-full bg-white border border-[#ccc] rounded px-3 py-1.5 text-sm text-[#333] focus:outline-none focus:border-[#3b5998]"
               />
             </div>
 
             {authMode === 'signup' && (
-              <div>
-                <label className="block text-[11px] font-bold text-zinc-600 mb-1">TEAM NAME</label>
-                <input 
-                  type="text" 
-                  value={authTeamName}
-                  onChange={(e) => setAuthTeamName(normalizeHandleInput(e.target.value))}
-                  placeholder="e.g. red_pandas"
-                  required
-                  className="w-full bg-white border border-[#ccc] rounded px-3 py-1.5 text-sm text-[#333] focus:outline-none focus:border-[#3b5998]"
-                />
-              </div>
+              <>
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-600 mb-1">CONFIRM PASSWORD</label>
+                  <input
+                    type="password"
+                    value={authConfirmPassword}
+                    onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                    placeholder="••••••••"
+                    required
+                    minLength={MIN_PASSWORD_LENGTH}
+                    autoComplete="new-password"
+                    className="w-full bg-white border border-[#ccc] rounded px-3 py-1.5 text-sm text-[#333] focus:outline-none focus:border-[#3b5998]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-600 mb-1">TEAM NAME</label>
+                  <input 
+                    type="text" 
+                    value={authTeamName}
+                    onChange={(e) => setAuthTeamName(normalizeHandleInput(e.target.value))}
+                    placeholder="e.g. red_pandas"
+                    required
+                    className="w-full bg-white border border-[#ccc] rounded px-3 py-1.5 text-sm text-[#333] focus:outline-none focus:border-[#3b5998]"
+                  />
+                </div>
+              </>
             )}
 
             <button
@@ -525,6 +618,7 @@ export default function App() {
               onClick={() => {
                 setAuthMode(authMode === 'login' ? 'signup' : 'login');
                 setAuthError('');
+                setAuthConfirmPassword('');
               }}
               className="text-xs text-[#3b5998] hover:underline"
             >

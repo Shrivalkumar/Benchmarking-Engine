@@ -14,6 +14,7 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
 const MAX_TPS = 5000;
 const MAX_CONCURRENCY = 500;
 const MAX_DURATION_SECONDS = 300;
+const MIN_PASSWORD_LENGTH = 8;
 
 interface AuthPayload {
   userId: number;
@@ -43,9 +44,13 @@ function parseHandle(value: unknown, fieldName: string): { value?: string; error
   return { value: normalized };
 }
 
-function parsePassword(value: unknown): { value?: string; error?: string } {
+function parsePassword(value: unknown, options: { minLength?: number } = {}): { value?: string; error?: string } {
   if (typeof value !== 'string' || value.length === 0) {
     return { error: 'password is required' };
+  }
+
+  if (options.minLength && value.length < options.minLength) {
+    return { error: `password must be at least ${options.minLength} characters` };
   }
 
   return { value };
@@ -102,7 +107,7 @@ app.post('/auth/signup', async (req: Request, res: Response): Promise<any> => {
   const { username, password, team_name } = req.body;
 
   const parsedUsername = parseHandle(username, 'username');
-  const parsedPassword = parsePassword(password);
+  const parsedPassword = parsePassword(password, { minLength: MIN_PASSWORD_LENGTH });
   const parsedTeamName = parseHandle(team_name, 'team_name');
   const validationErrors = [parsedUsername.error, parsedPassword.error, parsedTeamName.error].filter(Boolean);
   if (validationErrors.length > 0) {
