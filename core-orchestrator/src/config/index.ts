@@ -39,11 +39,40 @@ async function initializeMongoSchema() {
 
   await mongoDb.collection('users').createIndex({ username: 1 }, { unique: true });
   await mongoDb.collection('users').createIndex({ teamName: 1 }, { unique: true });
-  await mongoDb.collection('users').createIndex(
+  await mongoDb.collection('teams').createIndex({ teamName: 1 }, { unique: true });
+
+  const users = mongoDb.collection('users');
+  const teams = mongoDb.collection('teams');
+  const legacyUsers = await users.find({
+    teamId: { $exists: false },
+    teamName: { $type: 'string' },
+  }).toArray();
+
+  for (const user of legacyUsers) {
+    const team = await teams.findOneAndUpdate(
+      { teamName: user.teamName },
+      { $setOnInsert: { teamName: user.teamName, createdAt: user.createdAt || new Date() } },
+      { upsert: true, returnDocument: 'after' }
+    );
+
+    if (!team?._id) {
+      throw new Error(`Unable to migrate team identity for user ${user._id}`);
+    }
+
+    await users.updateOne(
+      { _id: user._id, teamId: { $exists: false } },
+      { $set: { teamId: team._id.toString() }, $unset: { contestantId: '', __v: '' } }
+    );
+  }
+
+  if (legacyUsers.length > 0) {
+    console.log(`✅ Migrated ${legacyUsers.length} legacy MongoDB user record(s).`);
+  }
+
+  await users.createIndex(
     { teamId: 1 },
     { unique: true, partialFilterExpression: { teamId: { $type: 'string' } } }
   );
-  await mongoDb.collection('teams').createIndex({ teamName: 1 }, { unique: true });
 
   console.log('✅ MongoDB identity schema initialized successfully.');
 }
