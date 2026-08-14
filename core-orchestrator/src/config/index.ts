@@ -7,7 +7,8 @@ import { Db, MongoClient } from 'mongodb';
 export const PORT = process.env.PORT || 8000;
 export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/benchmarking';
 export const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-export const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017';
+// Identity data is intentionally kept in the configured external MongoDB instance.
+export const MONGO_URL = process.env.MONGO_URL || process.env.MONGODB_URI;
 export const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'benchmarking';
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS || 'localhost:9092';
 export const BENCHMARK_NET = process.env.BENCHMARK_NET || 'benchmarking-net';
@@ -20,7 +21,7 @@ export const db = new Pool({
   connectionString: DATABASE_URL,
 });
 
-export const mongoClient = new MongoClient(MONGO_URL);
+export let mongoClient: MongoClient;
 export let mongoDb: Db;
 
 // Redis Client
@@ -117,6 +118,10 @@ export async function initConnections() {
   await redis.connect();
   console.log('✅ Connected to Redis successfully');
 
+  if (!MONGO_URL) {
+    throw new Error('MONGO_URL or MONGODB_URI must be configured for persistent identity storage');
+  }
+  mongoClient = new MongoClient(MONGO_URL);
   await mongoClient.connect();
   mongoDb = mongoClient.db(MONGO_DB_NAME);
   console.log('✅ Connected to MongoDB successfully');

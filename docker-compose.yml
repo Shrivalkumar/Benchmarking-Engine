@@ -43,22 +43,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # MongoDB - persistent identity storage for users and teams
-  mongodb:
-    image: mongo:7
-    container_name: mongodb
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - platform-net
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   # PostgreSQL - storage of submissions and benchmark metadata
   postgres:
     image: postgres:15-alpine
@@ -99,7 +83,7 @@ services:
       - PORT=8000
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/benchmarking
       - REDIS_URL=redis://redis:6379
-      - MONGO_URL=mongodb://mongodb:27017
+      - MONGO_URL=${MONGODB_URI:?MONGODB_URI must be set in .env}
       - MONGO_DB_NAME=benchmarking
       - JWT_SECRET=${JWT_SECRET:-local-dev-change-me}
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-local-dev-internal-token}
@@ -118,8 +102,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      mongodb:
         condition: service_healthy
       redpanda:
         condition: service_healthy
@@ -201,6 +183,3 @@ networks:
     name: sandbox-net
     driver: bridge
     internal: true
-
-volumes:
-  mongo_data:

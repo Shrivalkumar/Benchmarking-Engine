@@ -15,7 +15,8 @@ flowchart TD
     end
 
     subgraph Control & Orchestration
-        CO --> |Docker Socket API| CD[Docker Engine / cgroups]
+    CO --> |Docker Socket API| CD[Docker Engine / cgroups]
+    CO --> |Identity data| MG[(External MongoDB)]
         CO --> |Spawn / Control| MC[Mock Contestant Container]
         CO --> |HTTP / Control Topic| BF[Go Bot Fleet]
     end
@@ -44,7 +45,7 @@ flowchart TD
 
 ### 2.1 Core Orchestrator (Node.js + TypeScript)
 - **Code Upload & Build:** Accepts submissions (e.g., raw binaries or code zip files), writes them to disk, and uses the Docker Engine API to programmatically build a secure container image.
-- **Authentication & Ownership:** Stores user/team credentials in PostgreSQL, issues JWTs, and restricts submission/build/run actions to the authenticated team.
+- **Authentication & Ownership:** Stores user/team credentials in the configured external MongoDB database, issues JWTs, and restricts submission/build/run actions to the authenticated team.
 - **Sandboxed Hosting:** Spawns the contestant container on a dedicated internal Docker bridge network (`sandbox-net`) with strict resource constraints:
   - Memory: `--memory=512m` (with swap disabled).
   - CPU: `--cpus=1` (limiting compute resource exploitation).
@@ -185,11 +186,17 @@ cd Benchmarking-Engine
 ```
 
 ### 5.2 Step 2: Configure Environment Variables
-Create a `.env` file in the root of the directory for local secrets and dashboard endpoint overrides. You can start from `.env.example`:
+Create a `.env` file in the root of the directory for secrets, the externally hosted MongoDB URI, and dashboard endpoint overrides. You can start from `.env.example`:
 ```bash
 cp .env.example .env
 ```
 Replace `JWT_SECRET` and `INTERNAL_API_TOKEN` with long random values before running anything beyond local development.
+
+Set `MONGODB_URI` to your persistent MongoDB deployment. The orchestrator uses this URI directly; MongoDB is not started by Docker Compose.
+
+```dotenv
+MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>/<database>?retryWrites=true&w=majority
+```
 
 ### 5.3 Step 3: Spin Up the Services
 Run the following command to automatically pull, build, and start all 7 microservices in the background:
