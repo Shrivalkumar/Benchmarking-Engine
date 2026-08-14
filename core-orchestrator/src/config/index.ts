@@ -39,7 +39,10 @@ async function initializeMongoSchema() {
 
   await mongoDb.collection('users').createIndex({ username: 1 }, { unique: true });
   await mongoDb.collection('users').createIndex({ teamName: 1 }, { unique: true });
-  await mongoDb.collection('users').createIndex({ teamId: 1 }, { unique: true });
+  await mongoDb.collection('users').createIndex(
+    { teamId: 1 },
+    { unique: true, partialFilterExpression: { teamId: { $type: 'string' } } }
+  );
   await mongoDb.collection('teams').createIndex({ teamName: 1 }, { unique: true });
 
   console.log('✅ MongoDB identity schema initialized successfully.');
