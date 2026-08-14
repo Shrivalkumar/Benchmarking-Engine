@@ -1,4 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import CodeMirror from '@uiw/react-codemirror';
+import { cpp } from '@codemirror/lang-cpp';
+import { go } from '@codemirror/lang-go';
+import { EditorView } from '@codemirror/view';
 import { 
   Play, 
   Terminal, 
@@ -58,6 +62,43 @@ interface ChartDataPoint {
 }
 
 const AUTH_STORAGE_KEY = 'auth_user';
+
+const codeEditorTheme = EditorView.theme({
+  '&': {
+    height: '18rem',
+    fontSize: '12px',
+    border: '1px solid #ccc',
+    borderRadius: '4px',
+    backgroundColor: '#fff',
+  },
+  '&.cm-focused': {
+    outline: 'none',
+    borderColor: '#3b5998',
+  },
+  '.cm-scroller': {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  },
+  '.cm-content': {
+    minHeight: '18rem',
+  },
+  '.cm-gutters': {
+    backgroundColor: '#f8f9fa',
+    borderRight: '1px solid #e1e4e6',
+    color: '#71717a',
+  },
+  '.cm-activeLine, .cm-activeLineGutter': {
+    backgroundColor: '#eff6ff',
+  },
+  '.cm-placeholder': {
+    color: '#71717a',
+  },
+});
+
+function getSourcePlaceholder(language: 'go' | 'cpp') {
+  return language === 'go'
+    ? "// Paste your Go matching engine source code here...\n// Must listen on port :8080 and expose /health and /order"
+    : "// Paste your C++ matching engine source code here...\n// Must listen on port :8080 and expose /health and /order";
+}
 
 function normalizeHandleInput(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9_]/g, '');
@@ -146,6 +187,10 @@ export default function App() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const codeEditorExtensions = useMemo(
+    () => [language === 'go' ? go() : cpp(), EditorView.lineWrapping],
+    [language]
+  );
 
   // Fetch standings on mount
   useEffect(() => {
@@ -597,16 +642,22 @@ export default function App() {
                       <span>SOURCE CODE ({language.toUpperCase()})</span>
                       <span className="text-[10px] text-zinc-500 font-mono">EXPOSE PORT :8080</span>
                     </label>
-                    <textarea 
+                    <CodeMirror
                       value={sourceCode}
-                      onChange={(e) => setSourceCode(e.target.value)}
-                      className="w-full h-72 bg-white border border-[#ccc] rounded p-3 text-xs font-mono text-[#333] focus:outline-none focus:border-[#3b5998] resize-none"
-                      spellCheck="false"
-                      placeholder={
-                        language === 'go' 
-                          ? "// Paste your Go matching engine source code here...\n// Must listen on port :8080 and expose /health and /order" 
-                          : "// Paste your C++ matching engine source code here...\n// Must listen on port :8080 and expose /health and /order"
-                      }
+                      height="18rem"
+                      extensions={codeEditorExtensions}
+                      theme={codeEditorTheme}
+                      placeholder={getSourcePlaceholder(language)}
+                      editable={!isBuilding && !isTesting}
+                      basicSetup={{
+                        autocompletion: true,
+                        bracketMatching: true,
+                        closeBrackets: true,
+                        foldGutter: true,
+                        highlightActiveLine: true,
+                        lineNumbers: true,
+                      }}
+                      onChange={(value) => setSourceCode(value)}
                     />
                   </div>
 
