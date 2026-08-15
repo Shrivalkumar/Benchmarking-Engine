@@ -49,7 +49,7 @@ services:
     container_name: postgres
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: benchmarking
     ports:
       - "5433:5432"
@@ -81,7 +81,7 @@ services:
     container_name: core-orchestrator
     environment:
       - PORT=8000
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/benchmarking
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/benchmarking
       - REDIS_URL=redis://redis:6379
       - MONGO_URL=${MONGODB_URI:?MONGODB_URI must be set in .env}
       - MONGO_DB_NAME=benchmarking
@@ -113,7 +113,7 @@ services:
     container_name: telemetry-ingester
     environment:
       - PORT=8001
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/benchmarking
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/benchmarking
       - REDIS_URL=redis://redis:6379
       - KAFKA_BROKERS=redpanda:29092
     ports:

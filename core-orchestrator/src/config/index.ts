@@ -25,6 +25,14 @@ function requireSecret(name: string, minimumLength = 32): string {
   return value;
 }
 
+function requireConfig(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required configuration: ${name}`);
+  }
+  return value;
+}
+
 /**
  * Validate security-sensitive configuration before accepting any request.
  * Values are deliberately never included in errors or logs.
@@ -41,11 +49,19 @@ export function validateStartupConfig(): void {
   if (NODE_ENV === 'production' && SANDBOX_BACKEND === 'docker') {
     throw new Error('SANDBOX_BACKEND=docker is forbidden in production');
   }
+  if (SANDBOX_BACKEND === 'kubernetes') {
+    if (!CONTESTANT_IMAGE_REPOSITORY) {
+      throw new Error('CONTESTANT_IMAGE_REPOSITORY is required for the Kubernetes sandbox backend');
+    }
+    if (!CPP_BUILDER_IMAGE) {
+      throw new Error('CPP_BUILDER_IMAGE is required for the Kubernetes sandbox backend');
+    }
+  }
 }
 
 // Environment variables configuration
 export const PORT = process.env.PORT || 8000;
-export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/benchmarking';
+export const DATABASE_URL = requireConfig('DATABASE_URL');
 export const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 // Identity data is intentionally kept in the configured external MongoDB instance.
 export const MONGO_URL = process.env.MONGO_URL || process.env.MONGODB_URI;
@@ -55,6 +71,10 @@ export const BENCHMARK_NET = process.env.BENCHMARK_NET || 'benchmarking-net';
 export const BOT_FLEET_URL = process.env.BOT_FLEET_URL || 'http://localhost:8081';
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const SANDBOX_BACKEND = process.env.SANDBOX_BACKEND || (NODE_ENV === 'production' ? 'kubernetes' : 'docker');
+export const KUBERNETES_NAMESPACE = process.env.KUBERNETES_NAMESPACE || 'benchmark-sandbox';
+export const KUBERNETES_RUNTIME_CLASS = process.env.KUBERNETES_RUNTIME_CLASS || 'gvisor';
+export const CONTESTANT_IMAGE_REPOSITORY = process.env.CONTESTANT_IMAGE_REPOSITORY || '';
+export const CPP_BUILDER_IMAGE = process.env.CPP_BUILDER_IMAGE || '';
 export const JWT_SECRET = requireSecret('JWT_SECRET');
 export const INTERNAL_API_TOKEN = requireSecret('INTERNAL_API_TOKEN');
 

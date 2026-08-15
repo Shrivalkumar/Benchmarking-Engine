@@ -3,6 +3,7 @@ import path from 'path';
 import { exec } from 'child_process';
 import Docker from 'dockerode';
 import { BENCHMARK_NET, db, NODE_ENV, SANDBOX_BACKEND } from '../config';
+import { KubernetesSandboxBackend } from './kubernetes-sandbox';
 
 export type SubmissionLanguage = 'go' | 'cpp';
 
@@ -238,6 +239,8 @@ const dockerBackend: SandboxBackend = {
   findRunId: DockerSandboxBackend.findRunId.bind(DockerSandboxBackend),
 };
 
+const kubernetesBackend: SandboxBackend = new KubernetesSandboxBackend();
+
 function backend(): SandboxBackend {
   if (SANDBOX_BACKEND === 'docker') {
     if (NODE_ENV === 'production') {
@@ -245,7 +248,7 @@ function backend(): SandboxBackend {
     }
     return dockerBackend;
   }
-  throw new Error('Kubernetes sandbox backend is not installed yet');
+  return kubernetesBackend;
 }
 
 /** Backend-neutral facade used by API and lifecycle code. */

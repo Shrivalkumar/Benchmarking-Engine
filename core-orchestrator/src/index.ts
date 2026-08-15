@@ -11,7 +11,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const MAX_SOURCE_BYTES = 1024 * 1024;
+// Kubernetes ConfigMaps have a 1MiB object limit; leave room for the build
+// template and metadata when source is handed to the isolated build Job.
+const MAX_SOURCE_BYTES = 900 * 1024;
 const MAX_TPS = 5000;
 const MAX_CONCURRENCY = 500;
 const MAX_DURATION_SECONDS = 300;
@@ -309,7 +311,7 @@ app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Resp
   }
 
   if (Buffer.byteLength(source_code, 'utf8') > MAX_SOURCE_BYTES) {
-    return res.status(413).json({ error: 'source_code exceeds the 1MB limit' });
+    return res.status(413).json({ error: 'source_code exceeds the 900KB limit' });
   }
 
   const requestedTeamId = team_id || contestant_id;
@@ -633,14 +635,16 @@ async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'co
 // launching with insecure or missing authentication material.
 validateStartupConfig();
 
-// Start API Server
+// Start only after every startup requirement and dependency has succeeded.
 const PORT_NUM = Number(PORT);
-app.listen(PORT_NUM, '0.0.0.0', async () => {
-  try {
-    await initConnections();
+async function startServer() {
+  await initConnections();
+  app.listen(PORT_NUM, '0.0.0.0', () => {
     console.log(`🚀 Core Orchestrator running on http://0.0.0.0:${PORT_NUM}`);
-  } catch (err) {
-    console.error('❌ Failed to start Core Orchestrator:', err);
-    process.exit(1);
-  }
+  });
+}
+
+startServer().catch((err) => {
+  console.error('❌ Failed to start Core Orchestrator:', err);
+  process.exit(1);
 });

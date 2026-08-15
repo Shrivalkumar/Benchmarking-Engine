@@ -7,7 +7,10 @@ import { createClient } from 'redis';
 
 // Configuration
 const PORT = process.env.PORT || 8001;
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/benchmarking';
+const DATABASE_URL = process.env.DATABASE_URL?.trim();
+if (!DATABASE_URL) {
+  throw new Error('Missing required configuration: DATABASE_URL');
+}
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const KAFKA_BROKERS = process.env.KAFKA_BROKERS || 'localhost:9092';
 const ACTIVE_RUNS_SET_KEY = 'runs:active';

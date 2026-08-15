@@ -194,6 +194,12 @@ Set independent `JWT_SECRET` and `INTERNAL_API_TOKEN` values before starting any
 openssl rand -base64 48
 ```
 
+Set a separate `POSTGRES_PASSWORD` as well. Compose refuses to render when any required secret is missing.
+
+### Production sandbox
+
+Production requires a Kubernetes cluster with gVisor installed and an isolated contestant node pool labelled `benchmarking.platform/node-pool=contestant` and tainted `benchmarking.platform/contestant=true:NoSchedule`. Apply [k8s-sandbox.yaml](iac-deployment/k8s-sandbox.yaml) first, provision its documented registry and application secrets through your secret manager, then apply [k8s-platform.yaml](iac-deployment/k8s-platform.yaml). The orchestrator has scoped permissions only in `benchmark-sandbox`; it has no Docker socket, DinD sidecar, or privileged container.
+
 Set `MONGODB_URI` to your persistent MongoDB deployment. The orchestrator uses this URI directly; MongoDB is not started by Docker Compose.
 
 ```dotenv

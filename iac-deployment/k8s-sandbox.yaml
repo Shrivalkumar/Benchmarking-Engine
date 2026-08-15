@@ -1,0 +1,160 @@
+# Production sandbox resources. Before applying, install gVisor on the
+# contestant node pool and create these external Secrets:
+# - platform-secrets (JWT_SECRET, INTERNAL_API_TOKEN, ORCHESTRATOR_INTERNAL_TOKEN)
+# - kaniko-registry-credentials (.dockerconfigjson for image pushes)
+# - contestant-registry-credentials (.dockerconfigjson for image pulls)
+# Also create ConfigMap sandbox-config in benchmark-sandbox with
+# CONTESTANT_IMAGE_REPOSITORY and CPP_BUILDER_IMAGE.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: benchmark-sandbox
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: core-orchestrator
+  namespace: default
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-builder
+  namespace: benchmark-sandbox
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-workload-manager
+  namespace: benchmark-sandbox
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "pods", "services"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: core-orchestrator-sandbox-workload-manager
+  namespace: benchmark-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: core-orchestrator
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-workload-manager
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: sandbox-quota
+  namespace: benchmark-sandbox
+spec:
+  hard:
+    pods: "20"
+    requests.cpu: "10"
+    limits.cpu: "20"
+    requests.memory: 10Gi
+    limits.memory: 20Gi
+    requests.ephemeral-storage: 20Gi
+    limits.ephemeral-storage: 40Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: sandbox-limits
+  namespace: benchmark-sandbox
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 250m
+        memory: 256Mi
+      default:
+        cpu: "1"
+        memory: 512Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: benchmark-sandbox
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-contestant-traffic-from-platform
+  namespace: benchmark-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      benchmarking.role: contestant
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+          podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["bot-fleet", "core-orchestrator"]
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Build Jobs need HTTPS egress to the approved registry/package mirrors. On
+# clusters with an egress gateway, replace this CIDR with that gateway only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-builder-registry-egress
+  namespace: benchmark-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      benchmarking.role: build
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
