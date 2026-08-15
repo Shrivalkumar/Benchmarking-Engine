@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
-import { initConnections, db, mongoDb, redis, BOT_FLEET_URL, INTERNAL_API_TOKEN, JWT_SECRET, PORT } from './config';
+import { initConnections, db, mongoDb, redis, BOT_FLEET_URL, INTERNAL_API_TOKEN, JWT_SECRET, PORT, validateStartupConfig } from './config';
 import { SandboxService } from './services/sandbox';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -630,6 +630,10 @@ async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'co
     console.error('Failed to update benchmark run status in PG:', err);
   }
 }
+
+// Validate before binding a network port. This protects against accidentally
+// launching with insecure or missing authentication material.
+validateStartupConfig();
 
 // Start API Server
 const PORT_NUM = Number(PORT);

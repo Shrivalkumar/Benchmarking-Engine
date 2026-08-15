@@ -190,7 +190,11 @@ Create a `.env` file in the root of the directory for secrets, the externally ho
 ```bash
 cp .env.example .env
 ```
-Replace `JWT_SECRET` and `INTERNAL_API_TOKEN` with long random values before running anything beyond local development.
+Set independent `JWT_SECRET` and `INTERNAL_API_TOKEN` values before starting any environment, including local development. Each must be at least 32 characters and must not be a placeholder. For example:
+
+```bash
+openssl rand -base64 48
+```
 
 Set `MONGODB_URI` to your persistent MongoDB deployment. The orchestrator uses this URI directly; MongoDB is not started by Docker Compose.
 

@@ -3,6 +3,41 @@ import { createClient } from 'redis';
 import Docker from 'dockerode';
 import { Db, MongoClient } from 'mongodb';
 
+const INSECURE_SECRET_VALUES = new Set([
+  'local-dev-change-me',
+  'local-dev-internal-token',
+  'replace-with-a-long-random-secret',
+  'replace-with-a-long-random-internal-token',
+  'changeme',
+  'change-me',
+]);
+
+function requireSecret(name: string, minimumLength = 32): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required configuration: ${name}`);
+  }
+  if (value.length < minimumLength) {
+    throw new Error(`${name} must be at least ${minimumLength} characters long`);
+  }
+  if (INSECURE_SECRET_VALUES.has(value.toLowerCase())) {
+    throw new Error(`${name} must not use a known placeholder value`);
+  }
+  return value;
+}
+
+/**
+ * Validate security-sensitive configuration before accepting any request.
+ * Values are deliberately never included in errors or logs.
+ */
+export function validateStartupConfig(): void {
+  const jwtSecret = requireSecret('JWT_SECRET');
+  const internalToken = requireSecret('INTERNAL_API_TOKEN');
+  if (jwtSecret === internalToken) {
+    throw new Error('JWT_SECRET and INTERNAL_API_TOKEN must be different values');
+  }
+}
+
 // Environment variables configuration
 export const PORT = process.env.PORT || 8000;
 export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/benchmarking';
@@ -13,8 +48,8 @@ export const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'benchmarking';
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS || 'localhost:9092';
 export const BENCHMARK_NET = process.env.BENCHMARK_NET || 'benchmarking-net';
 export const BOT_FLEET_URL = process.env.BOT_FLEET_URL || 'http://localhost:8081';
-export const JWT_SECRET = process.env.JWT_SECRET || 'local-dev-change-me';
-export const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || 'local-dev-internal-token';
+export const JWT_SECRET = requireSecret('JWT_SECRET');
+export const INTERNAL_API_TOKEN = requireSecret('INTERNAL_API_TOKEN');
 
 // PostgreSQL Pool
 export const db = new Pool({

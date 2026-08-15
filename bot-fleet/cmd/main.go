@@ -55,6 +55,11 @@ var (
 )
 
 func main() {
+	internalToken := os.Getenv("ORCHESTRATOR_INTERNAL_TOKEN")
+	if len(internalToken) < 32 || internalToken == "local-dev-internal-token" || internalToken == "replace-with-a-long-random-internal-token" {
+		log.Fatal("ORCHESTRATOR_INTERNAL_TOKEN must be configured with a non-placeholder value of at least 32 characters")
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
@@ -395,9 +400,7 @@ func notifyCompletion(runID string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if token := os.Getenv("ORCHESTRATOR_INTERNAL_TOKEN"); token != "" {
-		req.Header.Set("x-internal-token", token)
-	}
+	req.Header.Set("x-internal-token", os.Getenv("ORCHESTRATOR_INTERNAL_TOKEN"))
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
