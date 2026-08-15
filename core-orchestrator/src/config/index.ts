@@ -1,6 +1,5 @@
 import { Pool } from 'pg';
 import { createClient } from 'redis';
-import Docker from 'dockerode';
 import { Db, MongoClient } from 'mongodb';
 
 const INSECURE_SECRET_VALUES = new Set([
@@ -36,6 +35,12 @@ export function validateStartupConfig(): void {
   if (jwtSecret === internalToken) {
     throw new Error('JWT_SECRET and INTERNAL_API_TOKEN must be different values');
   }
+  if (SANDBOX_BACKEND !== 'docker' && SANDBOX_BACKEND !== 'kubernetes') {
+    throw new Error('SANDBOX_BACKEND must be either docker or kubernetes');
+  }
+  if (NODE_ENV === 'production' && SANDBOX_BACKEND === 'docker') {
+    throw new Error('SANDBOX_BACKEND=docker is forbidden in production');
+  }
 }
 
 // Environment variables configuration
@@ -48,6 +53,8 @@ export const MONGO_DB_NAME = process.env.MONGO_DB_NAME || 'benchmarking';
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS || 'localhost:9092';
 export const BENCHMARK_NET = process.env.BENCHMARK_NET || 'benchmarking-net';
 export const BOT_FLEET_URL = process.env.BOT_FLEET_URL || 'http://localhost:8081';
+export const NODE_ENV = process.env.NODE_ENV || 'development';
+export const SANDBOX_BACKEND = process.env.SANDBOX_BACKEND || (NODE_ENV === 'production' ? 'kubernetes' : 'docker');
 export const JWT_SECRET = requireSecret('JWT_SECRET');
 export const INTERNAL_API_TOKEN = requireSecret('INTERNAL_API_TOKEN');
 
@@ -65,9 +72,6 @@ export const redis = createClient({
 });
 
 redis.on('error', (err) => console.error('Redis Client Error', err));
-
-// Docker Engine API client (reads default socket /var/run/docker.sock)
-export const docker = new Docker();
 
 async function initializeMongoSchema() {
   console.log('🌱 Initializing MongoDB identity schema...');

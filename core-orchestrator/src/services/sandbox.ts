@@ -1,9 +1,34 @@
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
-import { docker, BENCHMARK_NET, db } from '../config';
+import Docker from 'dockerode';
+import { BENCHMARK_NET, db, NODE_ENV, SANDBOX_BACKEND } from '../config';
 
-export class SandboxService {
+export type SubmissionLanguage = 'go' | 'cpp';
+
+export interface BuildResult {
+  success: boolean;
+  imageTag: string;
+  logs: string;
+}
+
+export interface SandboxRun {
+  sandboxId: string;
+  endpoint: string;
+}
+
+export interface SandboxBackend {
+  buildSubmissionImage(submissionId: number, imageTag: string, sourceCode: string, language: SubmissionLanguage): Promise<BuildResult>;
+  startRun(submissionId: number, runId: string): Promise<SandboxRun>;
+  stopRun(sandboxId: string): Promise<void>;
+  findRunId(runId: string): Promise<string | null>;
+}
+
+// This client is scoped to the local-only Docker backend. Production images
+// have no Docker CLI or socket mount, and production config rejects this mode.
+const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
+
+class DockerSandboxBackend {
   /**
    * Programmatically builds a Docker image for a specific submission.
    * Compiles source code in an isolated Docker build context.
@@ -12,8 +37,8 @@ export class SandboxService {
     submissionId: number,
     imageTag: string,
     sourceCode: string,
-    language: 'go' | 'cpp'
-  ): Promise<{ success: boolean; imageTag: string; logs: string }> {
+    language: SubmissionLanguage
+  ): Promise<BuildResult> {
     const buildDir = path.join(__dirname, `../../temp_builds/sub-${submissionId}`);
     
     // Ensure build directory exists
@@ -93,7 +118,7 @@ CMD ["./matching-engine"]
    * Spawns a sandboxed container for a specific contestant's submission.
    * Limits memory to 512MB and CPU to 1 core, attached to benchmarking-net.
    */
-  static async startContainer(submissionId: number, runId: string): Promise<{ containerId: string; hostname: string }> {
+  static async startRun(submissionId: number, runId: string): Promise<SandboxRun> {
     const imageResult = await db.query(
       'SELECT docker_image_tag FROM submissions WHERE id = $1 AND status = $2',
       [submissionId, 'built']
@@ -161,40 +186,40 @@ CMD ["./matching-engine"]
     console.log(`Successfully started sandboxed container ${hostname} (ID: ${container.id})`);
 
     return {
-      containerId: container.id,
-      hostname,
+      sandboxId: container.id,
+      endpoint: `http://${hostname}:8080`,
     };
   }
 
   /**
    * Stops and removes a running sandboxed container.
    */
-  static async stopContainer(containerId: string): Promise<void> {
-    const container = docker.getContainer(containerId);
+  static async stopRun(sandboxId: string): Promise<void> {
+    const container = docker.getContainer(sandboxId);
 
     try {
-      console.log(`Stopping container ${containerId}...`);
+      console.log(`Stopping container ${sandboxId}...`);
       // Stop the container (timeout after 5 seconds, then SIGKILL)
       await container.stop({ t: 5 });
     } catch (error: any) {
       if (error.statusCode !== 304 && error.statusCode !== 404) {
-        console.error(`Error stopping container ${containerId}:`, error);
+        console.error(`Error stopping container ${sandboxId}:`, error);
       }
     }
 
     try {
-      console.log(`Removing container ${containerId}...`);
+      console.log(`Removing container ${sandboxId}...`);
       await container.remove({ force: true });
-      console.log(`Successfully removed container ${containerId}`);
+      console.log(`Successfully removed container ${sandboxId}`);
     } catch (error: any) {
       if (error.statusCode !== 404) {
-        console.error(`Error removing container ${containerId}:`, error);
+        console.error(`Error removing container ${sandboxId}:`, error);
         throw error;
       }
     }
   }
 
-  static async findContainerIdByRun(runId: string): Promise<string | null> {
+  static async findRunId(runId: string): Promise<string | null> {
     const containers = await docker.listContainers({
       all: true,
       filters: {
@@ -203,5 +228,41 @@ CMD ["./matching-engine"]
     });
 
     return containers[0]?.Id || null;
+  }
+}
+
+const dockerBackend: SandboxBackend = {
+  buildSubmissionImage: DockerSandboxBackend.buildSubmissionImage.bind(DockerSandboxBackend),
+  startRun: DockerSandboxBackend.startRun.bind(DockerSandboxBackend),
+  stopRun: DockerSandboxBackend.stopRun.bind(DockerSandboxBackend),
+  findRunId: DockerSandboxBackend.findRunId.bind(DockerSandboxBackend),
+};
+
+function backend(): SandboxBackend {
+  if (SANDBOX_BACKEND === 'docker') {
+    if (NODE_ENV === 'production') {
+      throw new Error('Docker sandbox backend is not available in production');
+    }
+    return dockerBackend;
+  }
+  throw new Error('Kubernetes sandbox backend is not installed yet');
+}
+
+/** Backend-neutral facade used by API and lifecycle code. */
+export class SandboxService {
+  static buildSubmissionImage(...args: Parameters<SandboxBackend['buildSubmissionImage']>) {
+    return backend().buildSubmissionImage(...args);
+  }
+
+  static startRun(...args: Parameters<SandboxBackend['startRun']>) {
+    return backend().startRun(...args);
+  }
+
+  static stopRun(...args: Parameters<SandboxBackend['stopRun']>) {
+    return backend().stopRun(...args);
+  }
+
+  static findRunId(...args: Parameters<SandboxBackend['findRunId']>) {
+    return backend().findRunId(...args);
   }
 }

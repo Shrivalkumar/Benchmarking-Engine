@@ -428,19 +428,17 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
 
     const runId = uuidv4();
     pendingRunId = runId;
-    const targetHostname = `contestant-run-${runId}`;
-
     // 1. Programmatically start the sandboxed contestant container
-    const { containerId } = await SandboxService.startContainer(submission.id, runId);
-    activeContainers.set(runId, containerId);
+    const { sandboxId, endpoint } = await SandboxService.startRun(submission.id, runId);
+    activeContainers.set(runId, sandboxId);
 
-    await waitForContestantHealth(`http://${targetHostname}:8080`);
+    await waitForContestantHealth(endpoint);
 
     // 2. Track this run independently so concurrent benchmarks do not collide.
     await redis.hSet(activeRunKey(runId), {
       run_id: runId,
       team_name: submission.team_name,
-      container_id: containerId,
+      container_id: sandboxId,
       started_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + (requestedDuration + 30) * 1000).toISOString(),
     });
@@ -456,14 +454,14 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
 
     // 4. Trigger Go Bot Fleet load generator via HTTP
     const botFleetEndpoint = `${BOT_FLEET_URL}/start`;
-    console.log(`Triggering Go Bot Fleet at ${botFleetEndpoint} targeting ${targetHostname}:8080...`);
+    console.log(`Triggering Go Bot Fleet at ${botFleetEndpoint} targeting sandbox endpoint...`);
 
     const triggerResponse = await fetch(botFleetEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         benchmark_run_id: runId,
-        target_url: `http://${targetHostname}:8080`,
+        target_url: endpoint,
         duration_seconds: requestedDuration,
         tps: requestedTps,
         concurrency: requestedConcurrency,
@@ -485,7 +483,7 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
       message: 'Benchmark test triggered successfully.',
       benchmark_run_id: runId,
       team_name: submission.team_name,
-      target: `http://${targetHostname}:8080`,
+      target: endpoint,
     });
   } catch (error: any) {
     if (pendingRunId) {
@@ -580,7 +578,7 @@ async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'co
     }
   }
   if (!containerId) {
-    containerId = await SandboxService.findContainerIdByRun(runId) || undefined;
+    containerId = await SandboxService.findRunId(runId) || undefined;
   }
   if (!containerId) {
     await Promise.all([
@@ -604,7 +602,7 @@ async function cleanupRun(runId: string, triggerSource: string, finalStatus: 'co
 
   // 2. Stop and delete contestant container
   try {
-    await SandboxService.stopContainer(containerId);
+    await SandboxService.stopRun(containerId);
   } catch (err) {
     console.error(`Failed to stop container for run ${runId}:`, err);
   }

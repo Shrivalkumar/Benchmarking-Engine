@@ -1,7 +1,7 @@
 
 ## Architecture Blueprint & System Design Document
 
-This platform is an end-to-end distributed system designed to build, host, sandbox, stress-test, and evaluate contestant-submitted matching engines. It is designed to scale horizontally but run completely containerized on a local machine for testing and development.
+This platform is an end-to-end distributed system designed to build, host, sandbox, stress-test, and evaluate contestant-submitted matching engines. Docker Compose is a local-development workflow; production uses the Kubernetes sandbox backend and does not grant the orchestrator Docker access.
 
 ---
 
@@ -15,7 +15,7 @@ flowchart TD
     end
 
     subgraph Control & Orchestration
-    CO --> |Docker Socket API| CD[Docker Engine / cgroups]
+    CO --> |Sandbox backend API| CD[Isolated execution worker]
     CO --> |Identity data| MG[(External MongoDB)]
         CO --> |Spawn / Control| MC[Mock Contestant Container]
         CO --> |HTTP / Control Topic| BF[Go Bot Fleet]
@@ -44,7 +44,7 @@ flowchart TD
 ## 2. Component Design & Responsibilities
 
 ### 2.1 Core Orchestrator (Node.js + TypeScript)
-- **Code Upload & Build:** Accepts submissions (e.g., raw binaries or code zip files), writes them to disk, and uses the Docker Engine API to programmatically build a secure container image.
+  - **Code Upload & Build:** Accepts submissions and delegates compilation and execution to the configured sandbox backend. The Docker backend is local-development only.
 - **Authentication & Ownership:** Stores user/team credentials in the configured external MongoDB database, issues JWTs, and restricts submission/build/run actions to the authenticated team.
 - **Sandboxed Hosting:** Spawns the contestant container on a dedicated internal Docker bridge network (`sandbox-net`) with strict resource constraints:
   - Memory: `--memory=512m` (with swap disabled).
@@ -151,11 +151,9 @@ To isolate contestant containers while allowing the Go Bot Fleet to execute high
 - `sandbox-net`: internal bridge network for contestant containers plus the orchestrator and bot fleet.
 
 ```
-       [ Docker Host Socket ]
-                 | (read/write access to orchestrator)
        [ Core Orchestrator ]
                  |
-                 | (spawns container on "sandbox-net")
+                 | (local development only)
                  v
    +---------------------------------------------+
    |             sandbox-net                     |
@@ -176,7 +174,7 @@ Contestant containers are launched with:
 
 ## 5. How to Run This Project Locally
 
-To run the Benchmarking Engine on your local machine, you only need to have **Docker** and **Docker Compose** installed. You do not need Node.js, Go, or any databases installed on your host system.
+To run the Benchmarking Engine locally, you only need Docker and Docker Compose. `make` automatically layers `docker-compose.local.yml`, which contains the development-only Docker socket mount. Do not use that override in production.
 
 ### 5.1 Step 1: Clone the Repository
 Ensure you have cloned this repository to your local workspace:

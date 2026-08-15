@@ -1,0 +1,10 @@
+# Local development only. This file is intentionally separate so production
+# deployments never inherit host Docker access.
+services:
+  core-orchestrator:
+    environment:
+      SANDBOX_BACKEND: docker
+      DOCKER_SOCKET: /var/run/docker.sock
+      BENCHMARK_NET: sandbox-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

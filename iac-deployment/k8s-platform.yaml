@@ -8,8 +8,9 @@ data:
   REDIS_URL: "redis://redis-service:6379"
   KAFKA_BROKERS: "redpanda-service:9092"
   BOT_FLEET_URL: "http://bot-fleet-service:8081"
-  BENCHMARK_NET: "bridge" # Default docker network for DinD environment
-  DOCKER_HOST: "tcp://localhost:2375" # Points to the local DinD sidecar
+  NODE_ENV: "production"
+  SANDBOX_BACKEND: "kubernetes"
+  KUBERNETES_NAMESPACE: "benchmark-sandbox"
 ---
 apiVersion: v1
 kind: Secret
@@ -165,7 +166,7 @@ spec:
     app: redpanda
 ---
 # ----------------------------------------------------
-# Core Orchestrator Deployment (with Docker-in-Docker Sidecar)
+# Core Orchestrator Deployment (no host Docker access)
 # ----------------------------------------------------
 apiVersion: apps/v1
 kind: Deployment
@@ -199,21 +200,6 @@ spec:
             requests:
               cpu: "500m"
               memory: 512Mi
-
-        # Docker-in-Docker (DinD) sidecar to securely build and run contestant sandboxes
-        - name: dind-sidecar
-          image: docker:24-dind
-          securityContext:
-            privileged: true
-          env:
-            - name: DOCKER_TLS_CERTDIR
-              value: "" # Disable TLS since it is running on localhost inside Pod boundary
-          volumeMounts:
-            - name: dind-storage
-              mountPath: /var/lib/docker
-      volumes:
-        - name: dind-storage
-          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
