@@ -3,7 +3,7 @@
 # Start all platform services in the background
 up:
 	@echo "🚀 Spinning up IICPC Distributed Benchmarking Platform..."
-	docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+	docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 	@echo "✅ Services started. Open http://localhost:3000 to view dashboard."
 
 # Stop and clean all platform services (including volumes)

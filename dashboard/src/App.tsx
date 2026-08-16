@@ -206,6 +206,7 @@ export default function App() {
   // Real-time telemetry states
   const [liveMetrics, setLiveMetrics] = useState<TelemetryTick | null>(null);
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
+  const [streamStatus, setStreamStatus] = useState('idle');
 
   const wsRef = useRef<WebSocket | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -437,14 +438,18 @@ export default function App() {
     wsRef.current = socket;
 
     setChartData([]);
+    setStreamStatus('connecting');
 
     socket.onopen = () => {
       console.log('Connected to Telemetry Websocket stream');
+      setStreamStatus('connected');
     };
 
     socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'telemetry-tick' && data.run_id === runId) {
+      let data: TelemetryTick;
+      try { data = JSON.parse(event.data); } catch { setStreamStatus('invalid telemetry'); return; }
+      if ((data.type === 'telemetry-tick' || data.type === 'telemetry-finalized') && data.run_id === runId) {
+        setStreamStatus(data.type === 'telemetry-finalized' ? 'finalizing' : 'live');
         setLiveMetrics(data);
         setChartData((prev) => {
           const updated = [...prev, {
@@ -461,8 +466,31 @@ export default function App() {
 
     socket.onclose = () => {
       console.log('Telemetry Websocket closed');
+      setStreamStatus('disconnected');
     };
   };
+
+  useEffect(() => {
+    if (!activeRunId || !user) return;
+    const pollRun = async () => {
+      try {
+        const response = await fetch(`${ORCHESTRATOR_API}/benchmark/${activeRunId}`, { headers: { Authorization: `Bearer ${user.token}` } });
+        if (!response.ok) throw new Error('run status unavailable');
+        const run = await response.json();
+        if (run.status === 'completed' || run.status === 'failed') {
+          setIsTesting(false);
+          setStreamStatus(run.status);
+          fetchStandings();
+          if (timerRef.current) clearInterval(timerRef.current);
+        }
+      } catch {
+        setStreamStatus('status unavailable');
+      }
+    };
+    pollRun();
+    const interval = setInterval(pollRun, 2000);
+    return () => clearInterval(interval);
+  }, [activeRunId, user]);
 
   // Start stress test
   const handleStartBenchmark = async () => {
@@ -478,6 +506,7 @@ export default function App() {
     
     setIsTesting(true);
     setTestRemainingTime(duration);
+    setStreamStatus('starting');
 
     try {
       const res = await fetch(`${ORCHESTRATOR_API}/benchmark/start`, {
@@ -513,8 +542,7 @@ export default function App() {
         setTestRemainingTime(count);
         if (count <= 0) {
           clearInterval(timerRef.current!);
-          setIsTesting(false);
-          fetchStandings();
+          setStreamStatus('finalizing');
         }
       }, 1000);
 
@@ -865,6 +893,7 @@ export default function App() {
                     </span>
                     <span className="text-[10px] text-zinc-500 font-mono">
                       RUN: {activeRunId.slice(0, 8)} | TEAM: {liveMetrics?.team_name || user.team_name}
+                      {' '}| {streamStatus.toUpperCase()}
                     </span>
                   </div>
 

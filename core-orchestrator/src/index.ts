@@ -245,6 +245,10 @@ app.post('/auth/login', async (req: Request, res: Response): Promise<any> => {
       { expiresIn: '7d' }
     );
 
+    redis.zAdd('leaderboard', { score: 0, value: user.teamName }, { NX: true }).catch((err) => {
+      console.error(`Failed to restore leaderboard entry for ${user.teamName}:`, err);
+    });
+
     return res.json({
       message: 'Login successful',
       token,
@@ -500,16 +504,34 @@ app.post('/benchmark/start', authenticateToken, async (req: AuthedRequest, res: 
  * 5. Complete Benchmark Run Webhook (Called by Bot Fleet or Ingester)
  */
 app.post('/benchmark/complete', requireInternalToken, async (req: Request, res: Response): Promise<any> => {
-  const { benchmark_run_id } = req.body;
+  const { benchmark_run_id, status } = req.body;
   if (!benchmark_run_id) {
     return res.status(400).json({ error: 'benchmark_run_id is required' });
   }
 
   try {
-    await cleanupRun(benchmark_run_id, 'completed');
-    return res.json({ message: `Benchmark ${benchmark_run_id} cleaned up successfully.` });
+    const finalStatus = status === 'failed' ? 'failed' : 'completed';
+    void cleanupRun(benchmark_run_id, 'telemetry-finalized', finalStatus).catch((error) => {
+      console.error(`Asynchronous cleanup failed for ${benchmark_run_id}:`, error);
+    });
+    return res.status(202).json({ message: `Benchmark ${benchmark_run_id} finalization accepted.` });
   } catch (error: any) {
     console.error('Error completing benchmark:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/benchmark/:runId', authenticateToken, async (req: AuthedRequest, res: Response): Promise<any> => {
+  try {
+    const result = await db.query(
+      `SELECT br.id, br.status, br.total_orders_sent, br.success_rate, br.p50_latency_ms, br.p90_latency_ms, br.p99_latency_ms, br.avg_tps, br.started_at, br.ended_at
+       FROM benchmark_runs br JOIN submissions s ON s.id = br.submission_id
+       WHERE br.id = $1 AND s.team_name = $2`,
+      [req.params.runId, req.user!.teamName]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Benchmark run not found' });
+    return res.json(result.rows[0]);
+  } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
 });

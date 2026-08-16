@@ -1,26 +1,9 @@
 -- PostgreSQL Schema for IICPC Distributed Benchmarking Platform
 
--- Create contestants table
-CREATE TABLE IF NOT EXISTS contestants (
-    id SERIAL PRIMARY KEY,
-    team_name VARCHAR(100) UNIQUE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create users table
-CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    username VARCHAR(100) UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    team_name VARCHAR(100) UNIQUE NOT NULL,
-    contestant_id INTEGER UNIQUE REFERENCES contestants(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create submissions table
+-- Identity records are stored in MongoDB. PostgreSQL stores benchmark data only.
 CREATE TABLE IF NOT EXISTS submissions (
     id SERIAL PRIMARY KEY,
-    contestant_id INTEGER REFERENCES contestants(id) ON DELETE CASCADE,
+    team_name VARCHAR(100) NOT NULL,
     docker_image_tag VARCHAR(150) NOT NULL,
     status VARCHAR(50) DEFAULT 'pending', -- pending, building, built, failed
     build_logs TEXT,
@@ -42,13 +25,11 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     ended_at TIMESTAMP WITH TIME ZONE
 );
 
--- Seed initial contestant and submission data for testing purposes
-INSERT INTO contestants (team_name) 
-VALUES ('alpha_traders'), ('beta_quant') 
-ON CONFLICT (team_name) DO NOTHING;
-
-INSERT INTO submissions (contestant_id, docker_image_tag, status) 
-VALUES 
-(1, 'mock-contestant:latest', 'built'),
-(2, 'mock-contestant:latest', 'built')
-ON CONFLICT DO NOTHING;
+-- Seed optional mock submissions for local smoke tests.
+INSERT INTO submissions (team_name, docker_image_tag, status)
+SELECT seed.team_name, 'mock-contestant:latest', 'built'
+FROM (VALUES ('alpha_traders'), ('beta_quant')) AS seed(team_name)
+WHERE NOT EXISTS (
+    SELECT 1 FROM submissions s
+    WHERE s.team_name = seed.team_name AND s.docker_image_tag = 'mock-contestant:latest'
+);
