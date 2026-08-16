@@ -29,6 +29,19 @@ services:
       timeout: 3s
       retries: 5
 
+  # Creates the telemetry topic on every fresh local Redpanda instance.
+  # Describing it after an "already exists" response keeps restarts idempotent.
+  telemetry-topic-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+    container_name: telemetry-topic-init
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["rpk topic create telemetry-stream --brokers redpanda:29092 --partitions 1 --replicas 1 || rpk topic describe telemetry-stream --brokers redpanda:29092"]
+    networks:
+      - platform-net
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
   # Redis - leaderboard sorted set and active job cache
   redis:
     image: redis:7-alpine
@@ -129,6 +142,8 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+      telemetry-topic-init:
+        condition: service_completed_successfully
 
   # Bot Fleet - scalable trading bot generator that stresses test environments
   bot-fleet:
@@ -148,6 +163,8 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
+      telemetry-topic-init:
+        condition: service_completed_successfully
 
   # Dashboard - React-based administration dashboard and real-time visualization of tests
   dashboard:
