@@ -204,6 +204,29 @@ async function initializeDatabaseSchema(client: any) {
   console.log('✅ PostgreSQL benchmark schema initialized successfully.');
 }
 
+async function rebuildLeaderboardFromDurableState() {
+  const teams = await mongoDb.collection<{ teamName: string }>('teams').find({}, { projection: { teamName: 1 } }).toArray();
+  for (const team of teams) {
+    const result = await db.query(
+      `SELECT (br.avg_tps * (br.success_rate / 100.0)) / (br.p90_latency_ms + 1.0) AS score
+       FROM benchmark_runs br
+       JOIN submissions s ON br.submission_id = s.id
+       WHERE s.team_name = $1
+         AND br.status = 'completed'
+         AND br.total_orders_sent > 0
+       ORDER BY score DESC
+       LIMIT 1`,
+      [team.teamName]
+    );
+    const score = Number(result.rows[0]?.score || 0);
+    const existingScore = await redis.zScore('leaderboard', team.teamName);
+    if (existingScore === null || score > existingScore) {
+      await redis.zAdd('leaderboard', { score, value: team.teamName });
+    }
+  }
+  console.log(`✅ Rebuilt leaderboard entries for ${teams.length} team(s).`);
+}
+
 // Initialize external connections
 export async function initConnections() {
   await redis.connect();
@@ -225,4 +248,5 @@ export async function initConnections() {
   } finally {
     client.release();
   }
+  await rebuildLeaderboardFromDurableState();
 }
