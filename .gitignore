@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 
+# Local CLI/agent context
+AGENTS.md
+PROJECT_PRODUCTION_REVIEW.md
+
 # Dependency directories
 node_modules/
 jspm_packages/
