@@ -28,6 +28,7 @@ type StartRequest struct {
 
 // Telemetry message structure sent to Kafka
 type TelemetryRecord struct {
+	EventType      string `json:"event_type,omitempty"`
 	BenchmarkRunID string `json:"benchmark_run_id"`
 	OrderID        string `json:"order_id"`
 	OrderType      string `json:"type"`
@@ -35,6 +36,7 @@ type TelemetryRecord struct {
 	StatusCode     int    `json:"status_code"`
 	IsSuccess      bool   `json:"is_success"`
 	Timestamp      int64  `json:"timestamp"`
+	ExpectedOrders int    `json:"expected_orders,omitempty"`
 }
 
 // Global shared HTTP client with connection pooling
@@ -49,7 +51,6 @@ var httpClient = &http.Client{
 }
 
 var (
-	kafkaWriter *kafka.Writer
 	activeMutex sync.Mutex
 	activeRuns  = make(map[string]context.CancelFunc)
 )
@@ -71,14 +72,6 @@ func main() {
 	}
 
 	log.Printf("Connecting to Kafka brokers at: %s", brokers)
-	kafkaWriter = &kafka.Writer{
-		Addr:     kafka.TCP(brokers),
-		Topic:    "telemetry-stream",
-		Balancer: &kafka.LeastBytes{},
-		Async:    true, // Send asynchronously to prevent Kafka from slowing down the load test
-	}
-	defer kafkaWriter.Close()
-
 	http.HandleFunc("/start", handleStart)
 	http.HandleFunc("/stop", handleStop)
 
@@ -199,6 +192,9 @@ func unregisterRun(runID string) {
 
 func runStressTest(ctx context.Context, req StartRequest) {
 	defer unregisterRun(req.BenchmarkRunID)
+	brokers := os.Getenv("KAFKA_BROKERS")
+	if brokers == "" { brokers = "localhost:9092" }
+	writer := &kafka.Writer{Addr: kafka.TCP(brokers), Topic: "telemetry-stream", Balancer: &kafka.LeastBytes{}, Async: true}
 
 	log.Printf("[Run %s] Starting stress test. Target: %s, TPS: %d, Concurrency: %d, Duration: %ds",
 		req.BenchmarkRunID, req.TargetURL, req.TPS, req.Concurrency, req.DurationSeconds)
@@ -208,6 +204,8 @@ func runStressTest(ctx context.Context, req StartRequest) {
 	var orderIDsMu sync.Mutex
 
 	var wg sync.WaitGroup
+	var sentOrders int
+	var sentOrdersMu sync.Mutex
 
 	// Split target TPS across concurrent workers
 	tpsPerWorker := float64(req.TPS) / float64(req.Concurrency)
@@ -289,7 +287,10 @@ func runStressTest(ctx context.Context, req StartRequest) {
 						Timestamp:      tOne / 1e6, // millisecond timestamp
 					}
 
-					publishTelemetry(record)
+					publishTelemetry(writer, record)
+					sentOrdersMu.Lock()
+					sentOrders++
+					sentOrdersMu.Unlock()
 				}
 			}
 		}(i)
@@ -307,8 +308,13 @@ func runStressTest(ctx context.Context, req StartRequest) {
 	wg.Wait()
 	log.Printf("[Run %s] All workers exited.", req.BenchmarkRunID)
 
-	// Callback to Core Orchestrator to signal run completion and trigger container shutdown
-	notifyCompletion(req.BenchmarkRunID)
+	sentOrdersMu.Lock()
+	expectedOrders := sentOrders
+	sentOrdersMu.Unlock()
+	publishTelemetry(writer, TelemetryRecord{EventType: "run_complete", BenchmarkRunID: req.BenchmarkRunID, ExpectedOrders: expectedOrders, Timestamp: time.Now().UnixMilli()})
+	if err := writer.Close(); err != nil {
+		log.Printf("[Run %s] Failed to flush telemetry: %v", req.BenchmarkRunID, err)
+	}
 }
 
 func createOrder(targetURL string, orderID string, orderType string) (int, bool) {
@@ -362,7 +368,7 @@ func cancelOrder(targetURL string, orderID string) (int, bool) {
 	return resp.StatusCode, resp.StatusCode == 200
 }
 
-func publishTelemetry(record TelemetryRecord) {
+func publishTelemetry(writer *kafka.Writer, record TelemetryRecord) {
 	payload, err := json.Marshal(record)
 	if err != nil {
 		log.Printf("Error marshalling telemetry record: %v", err)
@@ -375,38 +381,7 @@ func publishTelemetry(record TelemetryRecord) {
 	}
 
 	// WriteMessage sends message asynchronously to Kafka
-	if err := kafkaWriter.WriteMessages(context.Background(), msg); err != nil {
+	if err := writer.WriteMessages(context.Background(), msg); err != nil {
 		log.Printf("Error publishing telemetry message: %v", err)
 	}
-}
-
-func notifyCompletion(runID string) {
-	orchestratorURL := os.Getenv("ORCHESTRATOR_URL")
-	if orchestratorURL == "" {
-		orchestratorURL = "http://core-orchestrator:8000"
-	}
-
-	completeURL := orchestratorURL + "/benchmark/complete"
-	log.Printf("[Completion] Calling Core Orchestrator at %s", completeURL)
-
-	payload := map[string]string{
-		"benchmark_run_id": runID,
-	}
-	jsonBytes, _ := json.Marshal(payload)
-
-	req, err := http.NewRequest(http.MethodPost, completeURL, bytes.NewBuffer(jsonBytes))
-	if err != nil {
-		log.Printf("[Completion] Failed to create Core Orchestrator callback: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-internal-token", os.Getenv("ORCHESTRATOR_INTERNAL_TOKEN"))
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.Printf("[Completion] Failed to notify Core Orchestrator: %v", err)
-		return
-	}
-	resp.Body.Close()
-	log.Printf("[Completion] Callback successful. Status: %s", resp.Status)
 }

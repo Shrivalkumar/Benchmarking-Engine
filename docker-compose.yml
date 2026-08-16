@@ -116,6 +116,8 @@ services:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/benchmarking
       - REDIS_URL=redis://redis:6379
       - KAFKA_BROKERS=redpanda:29092
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN must be set in .env}
+      - ORCHESTRATOR_URL=http://core-orchestrator:8000
     ports:
       - "8001:8001"
     networks:
