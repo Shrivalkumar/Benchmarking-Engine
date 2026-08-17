@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import type { PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { db } from '../config';
 import type { BuildResult, SubmissionLanguage } from './sandbox';
 
@@ -40,10 +40,17 @@ function retryDelaySeconds(attempt: number) {
 }
 
 export class PostgresBuildQueue implements BuildQueue {
-  readonly workerId = `build-worker-${randomUUID()}`;
+  readonly workerId: string;
+
+  constructor(
+    private readonly database: Pick<Pool, 'connect' | 'query'> = db,
+    workerId = `build-worker-${randomUUID()}`,
+  ) {
+    this.workerId = workerId;
+  }
 
   async claimNext(): Promise<BuildJob | null> {
-    const client = await db.connect();
+    const client = await this.database.connect();
     try {
       await client.query('BEGIN');
       // Releasing expired leases makes worker crashes recoverable without a
@@ -106,7 +113,7 @@ export class PostgresBuildQueue implements BuildQueue {
   }
 
   async heartbeat(jobId: number) {
-    await db.query(`
+    await this.database.query(`
       UPDATE submission_build_jobs
       SET lease_expires_at = CURRENT_TIMESTAMP + ($3 * interval '1 second'), updated_at = CURRENT_TIMESTAMP
       WHERE id = $1 AND worker_id = $2 AND status = 'running'
@@ -157,7 +164,7 @@ export class PostgresBuildQueue implements BuildQueue {
   }
 
   private async withTransaction(action: (client: PoolClient) => Promise<void>) {
-    const client = await db.connect();
+    const client = await this.database.connect();
     try {
       await client.query('BEGIN');
       await action(client);
