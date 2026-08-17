@@ -3,6 +3,7 @@ import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import { initConnections, db, mongoDb, redis, BOT_FLEET_URL, INTERNAL_API_TOKEN, JWT_SECRET, PORT, validateStartupConfig } from './config';
 import { SandboxService } from './services/sandbox';
+import { BUILD_JOB_MAX_ATTEMPTS } from './services/build-queue';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { ObjectId } from 'mongodb';
@@ -339,26 +340,33 @@ app.post('/submissions', authenticateToken, async (req: AuthedRequest, res: Resp
 
     const imageTag = `contestant-sub-${uuidv4()}:latest`;
     
-    // 2. Insert submission metadata in PG (status: building)
-    const subResult = await db.query(
-      'INSERT INTO submissions (team_name, docker_image_tag, status) VALUES ($1, $2, $3) RETURNING *',
-      [req.user!.teamName, imageTag, 'building']
-    );
-    const submission = subResult.rows[0];
-
-    // 3. Trigger build in background to avoid blocking REST response
-    SandboxService.buildSubmissionImage(submission.id, imageTag, source_code, language)
-      .then((buildResult) => {
-        console.log(`Build completed for submission ${submission.id} (${language}). Success: ${buildResult.success}`);
-      })
-      .catch((err) => {
-        console.error(`Build crashed for submission ${submission.id}:`, err);
-      });
+    // Store the submission and its build request in one transaction. The
+    // independent build-worker claims it after this request has returned.
+    const client = await db.connect();
+    let submission: { id: number };
+    try {
+      await client.query('BEGIN');
+      const subResult = await client.query(
+        'INSERT INTO submissions (team_name, docker_image_tag, status) VALUES ($1, $2, $3) RETURNING id',
+        [req.user!.teamName, imageTag, 'queued']
+      );
+      submission = subResult.rows[0];
+      await client.query(
+        'INSERT INTO submission_build_jobs (submission_id, language, source_code, max_attempts) VALUES ($1, $2, $3, $4)',
+        [submission.id, language, source_code, BUILD_JOB_MAX_ATTEMPTS]
+      );
+      await client.query('COMMIT');
+    } catch (queueError) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw queueError;
+    } finally {
+      client.release();
+    }
 
     return res.status(202).json({
-      message: 'Submission received. Compilation and sandboxing build triggered.',
+      message: 'Submission received and queued for compilation.',
       submission_id: submission.id,
-      status: 'building',
+      status: 'queued',
     });
   } catch (error: any) {
     console.error(error);

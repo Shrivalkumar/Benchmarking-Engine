@@ -208,6 +208,49 @@ spec:
     app: core-orchestrator
 ---
 # ----------------------------------------------------
+# Submission Build Worker
+# ----------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: build-worker
+  template:
+    metadata:
+      labels:
+        app: build-worker
+    spec:
+      serviceAccountName: core-orchestrator
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: build-worker
+          image: iicpc/core-orchestrator:latest
+          command: ["npm", "run", "start:worker"]
+          env:
+            - name: BUILD_WORKER_CONCURRENCY
+              value: "2"
+            - name: BUILD_JOB_MAX_ATTEMPTS
+              value: "3"
+          envFrom:
+            - configMapRef:
+                name: platform-config
+            - secretRef:
+                name: platform-secrets
+            - configMapRef:
+                name: sandbox-config
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: "500m"
+              memory: 512Mi
+---
+# ----------------------------------------------------
 # Telemetry Ingester Service & Deployment
 # ----------------------------------------------------
 apiVersion: apps/v1

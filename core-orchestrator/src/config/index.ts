@@ -137,7 +137,7 @@ async function initializeMongoSchema() {
 }
 
 // Initialize database tables programmatically if they do not exist
-async function initializeDatabaseSchema(client: any) {
+export async function initializeDatabaseSchema(client: any) {
   console.log('🌱 Initializing PostgreSQL benchmark schema programmatically...');
   
   await client.query(`
@@ -169,6 +169,26 @@ async function initializeDatabaseSchema(client: any) {
 
   await client.query(`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS team_name VARCHAR(100);`);
   await client.query(`CREATE INDEX IF NOT EXISTS idx_submissions_team_name ON submissions(team_name);`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS submission_build_jobs (
+      id BIGSERIAL PRIMARY KEY,
+      submission_id INTEGER NOT NULL UNIQUE REFERENCES submissions(id) ON DELETE CASCADE,
+      language VARCHAR(10) NOT NULL CHECK (language IN ('go', 'cpp')),
+      source_code TEXT,
+      status VARCHAR(20) NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      lease_expires_at TIMESTAMP WITH TIME ZONE,
+      worker_id VARCHAR(100),
+      last_error TEXT,
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TIMESTAMP WITH TIME ZONE,
+      completed_at TIMESTAMP WITH TIME ZONE,
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_submission_build_jobs_claim ON submission_build_jobs (status, available_at) WHERE status = 'queued';`);
   await client.query(`
     DO $$
     BEGIN
@@ -202,6 +222,17 @@ async function initializeDatabaseSchema(client: any) {
   }
 
   console.log('✅ PostgreSQL benchmark schema initialized successfully.');
+}
+
+/** Initialize only PostgreSQL state needed by the asynchronous build worker. */
+export async function initWorkerConnections() {
+  const client = await db.connect();
+  try {
+    console.log('✅ Connected to PostgreSQL successfully');
+    await initializeDatabaseSchema(client);
+  } finally {
+    client.release();
+  }
 }
 
 async function rebuildLeaderboardFromDurableState() {
@@ -241,12 +272,6 @@ export async function initConnections() {
   console.log('✅ Connected to MongoDB successfully');
   await initializeMongoSchema();
 
-  const client = await db.connect();
-  try {
-    console.log('✅ Connected to PostgreSQL successfully');
-    await initializeDatabaseSchema(client);
-  } finally {
-    client.release();
-  }
+  await initWorkerConnections();
   await rebuildLeaderboardFromDurableState();
 }
