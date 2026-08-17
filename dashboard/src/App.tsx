@@ -333,7 +333,7 @@ export default function App() {
 
       const subData = await subRes.json();
       setSubmissionId(subData.submission_id);
-      setBuildStatus('compiling in Docker...');
+      setBuildStatus('queued for compilation...');
     } catch (err: any) {
       setIsBuilding(false);
       setBuildStatus('failed');

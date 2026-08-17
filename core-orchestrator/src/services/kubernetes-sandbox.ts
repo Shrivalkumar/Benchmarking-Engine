@@ -123,7 +123,7 @@ export class KubernetesSandboxBackend implements SandboxBackend {
       }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
-    return { success: false, message: 'Build Job timed out' };
+    throw new Error('Build Job timed out');
   }
 
   async buildSubmissionImage(submissionId: number, imageTag: string, sourceCode: string, language: SubmissionLanguage): Promise<BuildResult> {
@@ -135,6 +135,10 @@ export class KubernetesSandboxBackend implements SandboxBackend {
     let logs = '';
 
     try {
+      // A worker may have died after creating resources. Remove those stale,
+      // deterministic names before retrying the leased job.
+      await this.deleteIgnoringNotFound(api, `/apis/batch/v1/namespaces/${KUBERNETES_NAMESPACE}/jobs/${buildName}`);
+      await this.deleteIgnoringNotFound(api, `/api/v1/namespaces/${KUBERNETES_NAMESPACE}/configmaps/${sourceName}`);
       await api.request('POST', `/api/v1/namespaces/${KUBERNETES_NAMESPACE}/configmaps`, {
         apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: sourceName, labels: { 'benchmarking.platform': 'true', 'benchmarking.submission_id': String(submissionId) } },
         data: { [filename]: sourceCode, Dockerfile: submissionDockerfile(language) },
@@ -163,14 +167,12 @@ export class KubernetesSandboxBackend implements SandboxBackend {
       });
       const result = await this.waitForBuild(api, buildName);
       logs = result.message;
-      await db.query('UPDATE submissions SET docker_image_tag = $1, status = $2, build_logs = $3 WHERE id = $4', [fullImageTag, result.success ? 'built' : 'failed', logs, submissionId]);
       return { success: result.success, imageTag: fullImageTag, logs };
-    } catch (error: any) {
-      logs = error.message || 'Kubernetes build failed';
-      await db.query('UPDATE submissions SET status = $1, build_logs = $2 WHERE id = $3', ['failed', logs, submissionId]);
-      return { success: false, imageTag: fullImageTag, logs };
     } finally {
-      await this.deleteIgnoringNotFound(api, `/api/v1/namespaces/${KUBERNETES_NAMESPACE}/configmaps/${sourceName}`).catch(() => {});
+      await Promise.all([
+        this.deleteIgnoringNotFound(api, `/api/v1/namespaces/${KUBERNETES_NAMESPACE}/configmaps/${sourceName}`),
+        this.deleteIgnoringNotFound(api, `/apis/batch/v1/namespaces/${KUBERNETES_NAMESPACE}/jobs/${buildName}`),
+      ]).catch(() => {});
     }
   }
 

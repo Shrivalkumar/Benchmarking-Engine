@@ -44,7 +44,7 @@ flowchart TD
 ## 2. Component Design & Responsibilities
 
 ### 2.1 Core Orchestrator (Node.js + TypeScript)
-  - **Code Upload & Build:** Accepts submissions and delegates compilation and execution to the configured sandbox backend. The Docker backend is local-development only.
+  - **Code Upload & Build:** Accepts submissions into a durable PostgreSQL build queue. A dedicated worker claims and compiles them through the configured sandbox backend; the Docker backend is local-development only.
 - **Authentication & Ownership:** Stores user/team credentials in the configured external MongoDB database, issues JWTs, and restricts submission/build/run actions to the authenticated team.
 - **Sandboxed Hosting:** Spawns the contestant container on a dedicated internal Docker bridge network (`sandbox-net`) with strict resource constraints:
   - Memory: `--memory=512m` (with swap disabled).
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS submissions (
     id SERIAL PRIMARY KEY,
     team_name VARCHAR(100) NOT NULL,
     docker_image_tag VARCHAR(150) NOT NULL,
-    status VARCHAR(50) DEFAULT 'pending', -- pending, building, built, failed
+    status VARCHAR(50) DEFAULT 'pending', -- pending, queued, building, built, failed
     build_logs TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

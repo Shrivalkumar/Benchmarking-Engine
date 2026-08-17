@@ -8,3 +8,11 @@ services:
       BENCHMARK_NET: sandbox-net
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+  build-worker:
+    environment:
+      SANDBOX_BACKEND: docker
+      DOCKER_SOCKET: /var/run/docker.sock
+      BENCHMARK_NET: sandbox-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

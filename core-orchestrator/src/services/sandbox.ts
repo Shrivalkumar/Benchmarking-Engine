@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
+import { randomUUID } from 'crypto';
 import Docker from 'dockerode';
 import { BENCHMARK_NET, db, NODE_ENV, SANDBOX_BACKEND } from '../config';
 import { KubernetesSandboxBackend } from './kubernetes-sandbox';
@@ -40,7 +41,7 @@ class DockerSandboxBackend {
     sourceCode: string,
     language: SubmissionLanguage
   ): Promise<BuildResult> {
-    const buildDir = path.join(__dirname, `../../temp_builds/sub-${submissionId}`);
+    const buildDir = path.join(__dirname, `../../temp_builds/sub-${submissionId}-${randomUUID()}`);
     
     // Ensure build directory exists
     fs.mkdirSync(buildDir, { recursive: true });
@@ -89,7 +90,7 @@ CMD ["./matching-engine"]
     return new Promise((resolve) => {
       console.log(`Building Docker image ${imageTag} in ${buildDir}...`);
       
-      exec(`docker build -t ${imageTag} .`, { cwd: buildDir }, async (error, stdout, stderr) => {
+      exec(`docker build -t ${imageTag} .`, { cwd: buildDir, timeout: 5 * 60 * 1000, maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
         const logs = stdout + '\n' + stderr;
         const success = !error;
 
@@ -99,12 +100,6 @@ CMD ["./matching-engine"]
         } catch (cleanupErr) {
           console.error('Failed to clean up build dir:', cleanupErr);
         }
-
-        // Update database status
-        await db.query(
-          'UPDATE submissions SET docker_image_tag = $1, status = $2, build_logs = $3 WHERE id = $4',
-          [imageTag, success ? 'built' : 'failed', logs, submissionId]
-        );
 
         resolve({
           success,
