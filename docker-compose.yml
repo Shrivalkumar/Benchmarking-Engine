@@ -83,7 +83,7 @@ services:
     build:
       context: ./core-orchestrator/cpp-builder
       dockerfile: Dockerfile
-    image: benchmarking-cpp-builder:latest
+    image: shrival/cpp-builder:latest
     container_name: cpp-builder
 
   # Core Orchestrator - sandboxing management, image compilation, job execution triggers
@@ -92,6 +92,7 @@ services:
       context: ./core-orchestrator
       dockerfile: Dockerfile
     container_name: core-orchestrator
+    image: shrival/core-orchestrator:latest
     environment:
       - PORT=8000
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/benchmarking
@@ -124,6 +125,7 @@ services:
       context: ./core-orchestrator
       dockerfile: Dockerfile
     container_name: build-worker
+    image: shrival/core-orchestrator:latest
     command: ["npm", "run", "start:worker"]
     environment:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/benchmarking
@@ -150,6 +152,7 @@ services:
       context: ./telemetry-ingester
       dockerfile: Dockerfile
     container_name: telemetry-ingester
+    image: shrival/telemetry-ingester:latest
     environment:
       - PORT=8001
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/benchmarking
@@ -177,6 +180,7 @@ services:
       context: ./bot-fleet
       dockerfile: Dockerfile
     container_name: bot-fleet
+    image: shrival/bot-fleet:latest
     environment:
       - PORT=8081
       - KAFKA_BROKERS=redpanda:29092
@@ -198,6 +202,7 @@ services:
       context: ./dashboard
       dockerfile: Dockerfile
     container_name: dashboard
+    image: shrival/dashboard:latest
     environment:
       - VITE_ORCHESTRATOR_API=${VITE_ORCHESTRATOR_API:-http://127.0.0.1:8010}
       - VITE_TELEMETRY_WS=${VITE_TELEMETRY_WS:-ws://127.0.0.1:8001}
@@ -212,6 +217,7 @@ services:
       context: ./mock-contestant
       dockerfile: Dockerfile
     container_name: mock-contestant
+    image: shrival/mock-contestant:latest
     ports:
       - "8082:8080"
     networks:

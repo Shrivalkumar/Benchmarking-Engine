@@ -235,3 +235,16 @@ Manage your local environment using the following standard commands:
 * **Rebuild container images:** `make build` (or `docker compose build --no-cache`)
 * **Inspect logs in real-time:** `make logs` (or `docker compose logs -f`)
 * **Check service status:** `make ps` (or `docker compose ps`)
+
+### 5.7 Publish project images to Docker Hub
+
+The project-owned images are tagged as `shrival/*`: `core-orchestrator`, `cpp-builder`, `telemetry-ingester`, `bot-fleet`, `dashboard`, and `mock-contestant`.
+
+Log in once using a Docker Hub access token, then build and push them:
+
+```bash
+docker login -u shrival
+make docker-push
+```
+
+For locally built contestant submissions, `docker-compose.local.yml` sets `CONTESTANT_IMAGE_REPOSITORY=shrival`, so a built submission is tagged as `shrival/contestant-sub-<id>:latest`. Push a specific one with `docker push <that-tag>`. Kubernetes builds instead push automatically through Kaniko and must use `CONTESTANT_IMAGE_REPOSITORY=shrival` in `sandbox-config`.

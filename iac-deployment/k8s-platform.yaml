@@ -177,7 +177,7 @@ spec:
       containers:
         # Core Orchestrator application
         - name: orchestrator-app
-          image: iicpc/core-orchestrator:latest
+          image: shrival/core-orchestrator:latest
           envFrom:
             - configMapRef:
                 name: platform-config
@@ -228,7 +228,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: build-worker
-          image: iicpc/core-orchestrator:latest
+          image: shrival/core-orchestrator:latest
           command: ["npm", "run", "start:worker"]
           env:
             - name: BUILD_WORKER_CONCURRENCY
@@ -269,7 +269,7 @@ spec:
     spec:
       containers:
         - name: ingester
-          image: iicpc/telemetry-ingester:latest
+          image: shrival/telemetry-ingester:latest
           envFrom:
             - configMapRef:
                 name: platform-config
@@ -316,7 +316,7 @@ spec:
     spec:
       containers:
         - name: bot-fleet-app
-          image: iicpc/bot-fleet:latest
+          image: shrival/bot-fleet:latest
           envFrom:
             - configMapRef:
                 name: platform-config
@@ -361,7 +361,7 @@ spec:
     spec:
       containers:
         - name: dashboard-app
-          image: iicpc/dashboard:latest
+          image: shrival/dashboard:latest
           ports:
             - containerPort: 3000
 ---

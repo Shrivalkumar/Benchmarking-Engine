@@ -3,7 +3,7 @@ import path from 'path';
 import { exec } from 'child_process';
 import { randomUUID } from 'crypto';
 import Docker from 'dockerode';
-import { BENCHMARK_NET, db, NODE_ENV, SANDBOX_BACKEND } from '../config';
+import { BENCHMARK_NET, CONTESTANT_IMAGE_REPOSITORY, db, NODE_ENV, SANDBOX_BACKEND } from '../config';
 import { KubernetesSandboxBackend } from './kubernetes-sandbox';
 
 export type SubmissionLanguage = 'go' | 'cpp';
@@ -41,6 +41,9 @@ class DockerSandboxBackend {
     sourceCode: string,
     language: SubmissionLanguage
   ): Promise<BuildResult> {
+    const fullImageTag = CONTESTANT_IMAGE_REPOSITORY
+      ? `${CONTESTANT_IMAGE_REPOSITORY.replace(/\/$/, '')}/${imageTag}`
+      : imageTag;
     const buildDir = path.join(__dirname, `../../temp_builds/sub-${submissionId}-${randomUUID()}`);
     
     // Ensure build directory exists
@@ -67,7 +70,7 @@ CMD ["./matching-engine"]
     } else {
       filename = 'main.cpp';
       dockerfileContent = `
-FROM benchmarking-cpp-builder:latest AS builder
+FROM shrival/cpp-builder:latest AS builder
 WORKDIR /app
 COPY main.cpp .
 RUN g++ -O3 -std=c++17 -o matching-engine main.cpp -pthread
@@ -88,9 +91,9 @@ CMD ["./matching-engine"]
     fs.writeFileSync(path.join(buildDir, 'Dockerfile'), dockerfileContent);
 
     return new Promise((resolve) => {
-      console.log(`Building Docker image ${imageTag} in ${buildDir}...`);
+      console.log(`Building Docker image ${fullImageTag} in ${buildDir}...`);
       
-      exec(`docker build -t ${imageTag} .`, { cwd: buildDir, timeout: 5 * 60 * 1000, maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
+      exec(`docker build -t ${fullImageTag} .`, { cwd: buildDir, timeout: 5 * 60 * 1000, maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
         const logs = stdout + '\n' + stderr;
         const success = !error;
 
@@ -103,7 +106,7 @@ CMD ["./matching-engine"]
 
         resolve({
           success,
-          imageTag,
+          imageTag: fullImageTag,
           logs,
         });
       });
