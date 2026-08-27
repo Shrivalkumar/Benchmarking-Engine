@@ -10,6 +10,8 @@ data:
   NODE_ENV: "production"
   SANDBOX_BACKEND: "kubernetes"
   KUBERNETES_NAMESPACE: "benchmark-sandbox"
+  CONTESTANT_IMAGE_REPOSITORY: "shrival"
+  CPP_BUILDER_IMAGE: "shrival/cpp-builder:latest"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -183,8 +185,6 @@ spec:
                 name: platform-config
             - secretRef:
                 name: platform-secrets
-            - configMapRef:
-                name: sandbox-config
           ports:
             - containerPort: 8000
           resources:
@@ -240,8 +240,6 @@ spec:
                 name: platform-config
             - secretRef:
                 name: platform-secrets
-            - configMapRef:
-                name: sandbox-config
           resources:
             limits:
               cpu: "2"
