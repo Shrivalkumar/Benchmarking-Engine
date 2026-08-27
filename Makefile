@@ -1,4 +1,4 @@
-.PHONY: up down build logs ps clean test-seed
+.PHONY: up down build docker-push logs ps clean test-seed
 
 # Start all platform services in the background
 up:
@@ -17,6 +17,15 @@ build:
 	@echo "🛠️ Rebuilding all Docker images..."
 	docker compose -f docker-compose.yml -f docker-compose.local.yml build --no-cache
 	@echo "✅ Build complete."
+
+# Build and publish only project-owned images under the shrival Docker Hub namespace.
+# Run `docker login` first; Docker will prompt for a password or access token.
+docker-push:
+	@echo "📦 Building Docker Hub images..."
+	docker compose -f docker-compose.yml build cpp-builder core-orchestrator telemetry-ingester bot-fleet dashboard mock-contestant
+	@echo "☁️ Pushing images to Docker Hub..."
+	docker compose -f docker-compose.yml push cpp-builder core-orchestrator telemetry-ingester bot-fleet dashboard mock-contestant
+	@echo "✅ Images pushed to Docker Hub under shrival/*."
 
 # Follow system logs in real-time
 logs:

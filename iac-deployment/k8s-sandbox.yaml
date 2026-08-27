@@ -3,8 +3,8 @@
 # - platform-secrets (JWT_SECRET, INTERNAL_API_TOKEN, ORCHESTRATOR_INTERNAL_TOKEN)
 # - kaniko-registry-credentials (.dockerconfigjson for image pushes)
 # - contestant-registry-credentials (.dockerconfigjson for image pulls)
-# Also create ConfigMap sandbox-config in benchmark-sandbox with
-# CONTESTANT_IMAGE_REPOSITORY and CPP_BUILDER_IMAGE.
+# The platform ConfigMap supplies the Docker Hub contestant-image repository
+# and C++ builder image; update those values there when changing registries.
 apiVersion: v1
 kind: Namespace
 metadata:

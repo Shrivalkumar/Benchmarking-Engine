@@ -6,6 +6,8 @@ services:
       SANDBOX_BACKEND: docker
       DOCKER_SOCKET: /var/run/docker.sock
       BENCHMARK_NET: sandbox-net
+      # Keeps locally built contestant images pushable as shrival/<tag>.
+      CONTESTANT_IMAGE_REPOSITORY: ${CONTESTANT_IMAGE_REPOSITORY:-shrival}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
